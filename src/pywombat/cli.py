@@ -30,7 +30,8 @@ def format(input_file: Path, output: Optional[Path], verbose: bool):
 
     \b
     1. Expands the '(null)' column containing NAME=value pairs separated by ';'
-    2. Melts sample columns into rows with sample names and values
+    2. Preserves the CSQ (Consequence) column without melting
+    3. Melts sample columns into rows with sample names and values
 
     \b
     Example:
@@ -120,10 +121,15 @@ def format_bcftools_tsv(df: pl.DataFrame) -> pl.DataFrame:
 
     # Step 2: Identify sample columns and extract sample names
     # Sample columns have format "sample_name:..." in the header
+    # Skip the CSQ column as it should not be melted
     sample_cols = []
     sample_names = []
 
     for col in cols_after:
+        # Skip CSQ column
+        if col == "CSQ":
+            continue
+
         if ":" in col:
             sample_name = col.split(":", 1)[0]
             sample_cols.append(col)

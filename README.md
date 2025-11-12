@@ -29,7 +29,9 @@ The `format` command processes bcftools tabulated TSV files by:
 
 1. **Expanding the `(null)` column**: This column contains multiple fields in the format `NAME=value` separated by semicolons (e.g., `DP=30;AF=0.5;AC=2`). Each field is extracted into its own column.
 
-2. **Melting sample columns**: After the `(null)` column, there are typically sample columns with headers like `Sample1:GT`, `Sample2:GT`, etc. The tool:
+2. **Preserving the `CSQ` column**: The CSQ (Consequence) column is preserved as-is and not melted, allowing VEP annotations to remain intact.
+
+3. **Melting sample columns**: After the `(null)` column, there are typically sample columns with headers like `Sample1:GT`, `Sample2:GT`, etc. The tool:
    - Extracts the sample name (the part before the `:` character)
    - Transforms the wide format into long format
    - Creates a `sample` column with the sample names
@@ -39,15 +41,15 @@ The `format` command processes bcftools tabulated TSV files by:
 
 **Input:**
 ```tsv
-CHROM	POS	REF	ALT	(null)	Sample1:GT	Sample2:GT
-chr1	100	A	T	DP=30;AF=0.5	0/1	1/1
+CHROM	POS	REF	ALT	(null)	CSQ	Sample1:GT	Sample2:GT
+chr1	100	A	T	DP=30;AF=0.5;AC=2	T|missense_variant|MODERATE	0/1	1/1
 ```
 
 **Output:**
 ```tsv
-CHROM	POS	REF	ALT	AC	AF	DP	sample	sample_value
-chr1	100	A	T	null	0.5	30	Sample1	0/1
-chr1	100	A	T	null	0.5	30	Sample2	1/1
+CHROM	POS	REF	ALT	CSQ	AC	AF	DP	sample	sample_value
+chr1	100	A	T	T|missense_variant|MODERATE	2	0.5	30	Sample1	0/1
+chr1	100	A	T	T|missense_variant|MODERATE	2	0.5	30	Sample2	1/1
 ```
 
 ## Development
