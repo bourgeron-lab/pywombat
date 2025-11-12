@@ -27,12 +27,14 @@ uv run wombat format --help
 ## What It Does
 
 ### Input (Wide Format)
+
 ```
 CHROM  POS  REF  ALT  (null)              Sample1:GT  Sample2:GT
 chr1   100  A    T    DP=30;AF=0.5;AC=2   0/1         1/1
 ```
 
 ### Output (Long Format)
+
 ```
 CHROM  POS  REF  ALT  AC  AF   DP  sample   sample_value
 chr1   100  A    T    2   0.5  30  Sample1  0/1
