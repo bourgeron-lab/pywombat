@@ -1,10 +1,13 @@
 """CLI for wombat tool."""
 
+import re
+import warnings
 from pathlib import Path
 from typing import Optional
 
 import click
 import polars as pl
+import yaml
 
 
 @click.command()
@@ -30,12 +33,19 @@ import polars as pl
     type=click.Path(exists=True, path_type=Path),
     help="Pedigree file to add father and mother genotype columns.",
 )
+@click.option(
+    "-F",
+    "--filter-config",
+    type=click.Path(exists=True, path_type=Path),
+    help="Filter configuration YAML file to apply quality and impact filters.",
+)
 def cli(
     input_file: Path,
     output: Optional[str],
     output_format: str,
     verbose: bool,
     pedigree: Optional[Path],
+    filter_config: Optional[Path],
 ):
     """
     Wombat: A tool for processing bcftools tabulated TSV files.
@@ -87,30 +97,528 @@ def cli(
                 err=True,
             )
 
-        # Output the result
-        if output:
-            # Construct output filename with prefix and format
-            output_path = Path(f"{output}.{output_format}")
+        # Apply filters if provided
+        filter_config_data = None
+        if filter_config:
+            if verbose:
+                click.echo(f"Reading filter config: {filter_config}", err=True)
+            filter_config_data = load_filter_config(filter_config)
 
-            if output_format == "tsv":
-                formatted_df.write_csv(output_path, separator="\t")
-            elif output_format == "parquet":
-                formatted_df.write_parquet(output_path)
-
-            click.echo(f"Formatted data written to {output_path}", err=True)
+        # Apply filters and write output
+        if filter_config_data:
+            apply_filters_and_write(
+                formatted_df,
+                filter_config_data,
+                output,
+                output_format,
+                verbose,
+            )
         else:
-            # Write to stdout (only for TSV format)
-            if output_format != "tsv":
-                click.echo(
-                    "Error: stdout output only supported for TSV format. Use -o to specify an output prefix for parquet.",
-                    err=True,
-                )
-                raise click.Abort()
-            click.echo(formatted_df.write_csv(separator="\t"), nl=False)
+            # No filters - write single output file
+            if output:
+                # Construct output filename with prefix and format
+                output_path = Path(f"{output}.{output_format}")
+
+                if output_format == "tsv":
+                    formatted_df.write_csv(output_path, separator="\t")
+                elif output_format == "parquet":
+                    formatted_df.write_parquet(output_path)
+
+                click.echo(f"Formatted data written to {output_path}", err=True)
+            else:
+                # Write to stdout (only for TSV format)
+                if output_format != "tsv":
+                    click.echo(
+                        "Error: stdout output only supported for TSV format. Use -o to specify an output prefix for parquet.",
+                        err=True,
+                    )
+                    raise click.Abort()
+                click.echo(formatted_df.write_csv(separator="\t"), nl=False)
 
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         raise click.Abort()
+
+
+def load_filter_config(config_path: Path) -> dict:
+    """Load and parse filter configuration from YAML file."""
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+    return config
+
+
+def apply_quality_filters(
+    df: pl.DataFrame, quality_config: dict, verbose: bool = False
+) -> pl.DataFrame:
+    """Apply quality filters to the dataframe."""
+    if quality_config is None:
+        return df
+
+    original_rows = df.shape[0]
+
+    # Check for rare genotypes with '2' and warn
+    if "2" in str(df["sample_gt"].to_list()):
+        rare_gts = df.filter(pl.col("sample_gt").str.contains("2"))
+        if rare_gts.shape[0] > 0:
+            warnings.warn(
+                f"Found {rare_gts.shape[0]} rows with rare genotypes containing '2'. These will be kept."
+            )
+
+    # Filter: sample_gt must contain at least one '1' (default: true)
+    filter_no_alt = quality_config.get("filter_no_alt_allele", True)
+    if filter_no_alt:
+        df = df.filter(
+            pl.col("sample_gt").str.contains("1")
+            | pl.col("sample_gt").str.contains("2")
+        )
+
+    # Apply minimum depth filter
+    if "sample_dp_min" in quality_config:
+        min_dp = quality_config["sample_dp_min"]
+        df = df.filter(pl.col("sample_dp").cast(pl.Float64, strict=False) >= min_dp)
+
+    # Apply minimum GQ filter
+    if "sample_gq_min" in quality_config:
+        min_gq = quality_config["sample_gq_min"]
+        df = df.filter(pl.col("sample_gq").cast(pl.Float64, strict=False) >= min_gq)
+
+    # Determine genotype for VAF filters
+    # Het: contains exactly one '1' (0/1 or 1/0)
+    # HomAlt: 1/1
+    # HomRef: 0/0
+    is_het = (pl.col("sample_gt").str.count_matches("1") == 1) & ~pl.col(
+        "sample_gt"
+    ).str.contains("2")
+    is_hom_alt = pl.col("sample_gt") == "1/1"
+    is_hom_ref = pl.col("sample_gt") == "0/0"
+
+    # VAF filters for heterozygous
+    if "sample_vaf_het_min" in quality_config:
+        min_vaf_het = quality_config["sample_vaf_het_min"]
+        df = df.filter(~is_het | (pl.col("sample_vaf") >= min_vaf_het))
+
+    if "sample_vaf_het_max" in quality_config:
+        max_vaf_het = quality_config["sample_vaf_het_max"]
+        df = df.filter(~is_het | (pl.col("sample_vaf") <= max_vaf_het))
+
+    # VAF filters for homozygous alternate
+    if "sample_vaf_homalt_min" in quality_config:
+        min_vaf_homalt = quality_config["sample_vaf_homalt_min"]
+        df = df.filter(~is_hom_alt | (pl.col("sample_vaf") >= min_vaf_homalt))
+
+    # VAF filters for homozygous reference (wild type)
+    if "sample_vaf_hom_ref_max" in quality_config:
+        max_vaf_hom_ref = quality_config["sample_vaf_hom_ref_max"]
+        df = df.filter(~is_hom_ref | (pl.col("sample_vaf") <= max_vaf_hom_ref))
+
+    # Apply filters to parents if they exist and option is enabled
+    apply_to_parents = quality_config.get("apply_to_parents", False)
+    if apply_to_parents and "father" in df.columns:
+        # Apply same filters to father columns
+        if "sample_dp_min" in quality_config:
+            min_dp = quality_config["sample_dp_min"]
+            df = df.filter(
+                (pl.col("father_dp").is_null())
+                | (pl.col("father_dp").cast(pl.Float64, strict=False) >= min_dp)
+            )
+
+        if "sample_gq_min" in quality_config:
+            min_gq = quality_config["sample_gq_min"]
+            df = df.filter(
+                (pl.col("father_gq").is_null())
+                | (pl.col("father_gq").cast(pl.Float64, strict=False) >= min_gq)
+            )
+
+        # Father genotype checks
+        father_is_het = (pl.col("father_gt").str.count_matches("1") == 1) & ~pl.col(
+            "father_gt"
+        ).str.contains("2")
+        father_is_hom_alt = pl.col("father_gt") == "1/1"
+        father_is_hom_ref = pl.col("father_gt") == "0/0"
+
+        if "sample_vaf_het_min" in quality_config:
+            min_vaf_het = quality_config["sample_vaf_het_min"]
+            df = df.filter(
+                pl.col("father_vaf").is_null()
+                | ~father_is_het
+                | (pl.col("father_vaf") >= min_vaf_het)
+            )
+
+        if "sample_vaf_het_max" in quality_config:
+            max_vaf_het = quality_config["sample_vaf_het_max"]
+            df = df.filter(
+                pl.col("father_vaf").is_null()
+                | ~father_is_het
+                | (pl.col("father_vaf") <= max_vaf_het)
+            )
+
+        if "sample_vaf_homalt_min" in quality_config:
+            min_vaf_homalt = quality_config["sample_vaf_homalt_min"]
+            df = df.filter(
+                pl.col("father_vaf").is_null()
+                | ~father_is_hom_alt
+                | (pl.col("father_vaf") >= min_vaf_homalt)
+            )
+
+        if "sample_vaf_hom_ref_max" in quality_config:
+            max_vaf_hom_ref = quality_config["sample_vaf_hom_ref_max"]
+            df = df.filter(
+                pl.col("father_vaf").is_null()
+                | ~father_is_hom_ref
+                | (pl.col("father_vaf") <= max_vaf_hom_ref)
+            )
+
+        # Apply same filters to mother columns
+        if "sample_dp_min" in quality_config:
+            min_dp = quality_config["sample_dp_min"]
+            df = df.filter(
+                (pl.col("mother_dp").is_null())
+                | (pl.col("mother_dp").cast(pl.Float64, strict=False) >= min_dp)
+            )
+
+        if "sample_gq_min" in quality_config:
+            min_gq = quality_config["sample_gq_min"]
+            df = df.filter(
+                (pl.col("mother_gq").is_null())
+                | (pl.col("mother_gq").cast(pl.Float64, strict=False) >= min_gq)
+            )
+
+        # Mother genotype checks
+        mother_is_het = (pl.col("mother_gt").str.count_matches("1") == 1) & ~pl.col(
+            "mother_gt"
+        ).str.contains("2")
+        mother_is_hom_alt = pl.col("mother_gt") == "1/1"
+        mother_is_hom_ref = pl.col("mother_gt") == "0/0"
+
+        if "sample_vaf_het_min" in quality_config:
+            min_vaf_het = quality_config["sample_vaf_het_min"]
+            df = df.filter(
+                pl.col("mother_vaf").is_null()
+                | ~mother_is_het
+                | (pl.col("mother_vaf") >= min_vaf_het)
+            )
+
+        if "sample_vaf_het_max" in quality_config:
+            max_vaf_het = quality_config["sample_vaf_het_max"]
+            df = df.filter(
+                pl.col("mother_vaf").is_null()
+                | ~mother_is_het
+                | (pl.col("mother_vaf") <= max_vaf_het)
+            )
+
+        if "sample_vaf_homalt_min" in quality_config:
+            min_vaf_homalt = quality_config["sample_vaf_homalt_min"]
+            df = df.filter(
+                pl.col("mother_vaf").is_null()
+                | ~mother_is_hom_alt
+                | (pl.col("mother_vaf") >= min_vaf_homalt)
+            )
+
+        if "sample_vaf_hom_ref_max" in quality_config:
+            max_vaf_hom_ref = quality_config["sample_vaf_hom_ref_max"]
+            df = df.filter(
+                pl.col("mother_vaf").is_null()
+                | ~mother_is_hom_ref
+                | (pl.col("mother_vaf") <= max_vaf_hom_ref)
+            )
+
+    if verbose:
+        filtered_rows = df.shape[0]
+        click.echo(
+            f"Quality filters: {original_rows} -> {filtered_rows} rows ({original_rows - filtered_rows} filtered out)",
+            err=True,
+        )
+
+    return df
+
+
+def parse_impact_filter_expression(expression: str, df: pl.DataFrame) -> pl.Expr:
+    """Parse a filter expression string into a Polars expression."""
+    # Replace operators with Polars equivalents
+    # Support: =, !=, <=, >=, <, >, &, |, ()
+
+    expr_str = expression.strip()
+
+    # Split by logical operators while preserving them
+    tokens = re.split(r"(\s*[&|]\s*|\(|\))", expr_str)
+    tokens = [t.strip() for t in tokens if t.strip()]
+
+    def parse_condition(condition: str) -> pl.Expr:
+        """Parse a single condition into a Polars expression."""
+        condition = condition.strip()
+
+        # Try different operators in order of specificity
+        for op in ["<=", ">=", "!=", "=", "<", ">"]:
+            if op in condition:
+                parts = condition.split(op, 1)
+                if len(parts) == 2:
+                    col_name = parts[0].strip()
+                    value = parts[1].strip()
+
+                    # Check if column exists
+                    if col_name not in df.columns:
+                        raise ValueError(f"Column '{col_name}' not found in dataframe")
+
+                    # Try to convert value to number, otherwise treat as string
+                    try:
+                        value_num = float(value)
+                        col_expr = pl.col(col_name).cast(pl.Float64, strict=False)
+
+                        if op == "=":
+                            return col_expr == value_num
+                        elif op == "!=":
+                            return col_expr != value_num
+                        elif op == "<=":
+                            return col_expr <= value_num
+                        elif op == ">=":
+                            return col_expr >= value_num
+                        elif op == "<":
+                            return col_expr < value_num
+                        elif op == ">":
+                            return col_expr > value_num
+                    except ValueError:
+                        # String comparison (case-insensitive)
+                        value = value.strip("'\"")
+                        col_expr = pl.col(col_name).str.to_lowercase()
+                        value_lower = value.lower()
+
+                        if op == "=":
+                            return col_expr == value_lower
+                        elif op == "!=":
+                            return col_expr != value_lower
+                        else:
+                            raise ValueError(
+                                f"Operator '{op}' not supported for string comparison"
+                            )
+                break
+
+        raise ValueError(f"Could not parse condition: {condition}")
+
+    def build_expression(tokens: list, idx: int = 0) -> tuple[pl.Expr, int]:
+        """Recursively build expression from tokens."""
+        if idx >= len(tokens):
+            return None, idx
+
+        result = None
+        i = idx
+
+        while i < len(tokens):
+            token = tokens[i]
+
+            if token == "(":
+                # Parse sub-expression
+                sub_expr, new_i = build_expression(tokens, i + 1)
+                if result is None:
+                    result = sub_expr
+                i = new_i
+            elif token == ")":
+                # End of sub-expression
+                return result, i + 1
+            elif token == "&":
+                # AND operator
+                next_expr, new_i = build_expression(tokens, i + 1)
+                if next_expr is not None:
+                    result = result & next_expr if result is not None else next_expr
+                return result, new_i
+            elif token == "|":
+                # OR operator
+                next_expr, new_i = build_expression(tokens, i + 1)
+                if next_expr is not None:
+                    result = result | next_expr if result is not None else next_expr
+                return result, new_i
+            else:
+                # It's a condition
+                cond_expr = parse_condition(token)
+                if result is None:
+                    result = cond_expr
+                else:
+                    # If we have a result and encounter another condition without an operator,
+                    # assume AND
+                    result = result & cond_expr
+
+            i += 1
+
+        return result, i
+
+    expr, _ = build_expression(tokens)
+    return expr
+
+
+def apply_impact_filters(
+    df: pl.DataFrame,
+    impact_config: list,
+    output_prefix: str,
+    output_format: str,
+    verbose: bool,
+):
+    """Apply impact filters and create separate output files."""
+    if not impact_config:
+        return
+
+    # Sort impact filters by priority (lower number = higher priority)
+    impact_filters = sorted(impact_config, key=lambda x: x.get("priority", 999))
+
+    # Create a dict to store variants by impact filter
+    impact_variants = {}
+
+    # Apply each impact filter
+    for impact_filter in impact_filters:
+        name = impact_filter["name"]
+        priority = impact_filter.get("priority", 999)
+        expression = impact_filter["expression"]
+
+        if verbose:
+            click.echo(
+                f"Applying impact filter '{name}' (priority {priority})...", err=True
+            )
+
+        try:
+            # Parse and apply the filter expression
+            filter_expr = parse_impact_filter_expression(expression, df)
+            filtered_df = df.filter(filter_expr)
+
+            if verbose:
+                click.echo(
+                    f"  Impact filter '{name}': {filtered_df.shape[0]} variants",
+                    err=True,
+                )
+
+            # Store the filtered dataframe with its priority
+            impact_variants[name] = {
+                "df": filtered_df,
+                "priority": priority,
+            }
+        except Exception as e:
+            click.echo(
+                f"Error applying impact filter '{name}': {e}",
+                err=True,
+            )
+            raise
+
+    # Add flag_higher_impact column to each filtered dataframe
+    for name, data in impact_variants.items():
+        filtered_df = data["df"]
+        priority = data["priority"]
+
+        # Find variants that appear in higher priority filters
+        higher_priority_filters = []
+        for other_name, other_data in impact_variants.items():
+            if other_data["priority"] < priority:
+                higher_priority_filters.append(other_name)
+
+        if higher_priority_filters:
+            # Create a set of variant keys from higher priority filters
+            variant_keys_in_higher = set()
+            for other_name in higher_priority_filters:
+                other_df = impact_variants[other_name]["df"]
+                for row in other_df.select(["#CHROM", "POS", "REF", "ALT"]).iter_rows():
+                    variant_keys_in_higher.add(tuple(row))
+
+            # Add flag_higher_impact column
+            def check_higher_impact(chrom, pos, ref, alt):
+                key = (chrom, pos, ref, alt)
+                if key in variant_keys_in_higher:
+                    # Find which filters it appears in
+                    filters_with_variant = []
+                    for other_name in higher_priority_filters:
+                        other_df = impact_variants[other_name]["df"]
+                        match = other_df.filter(
+                            (pl.col("#CHROM") == chrom)
+                            & (pl.col("POS") == pos)
+                            & (pl.col("REF") == ref)
+                            & (pl.col("ALT") == alt)
+                        )
+                        if match.shape[0] > 0:
+                            filters_with_variant.append(other_name)
+                    return (
+                        ", ".join(filters_with_variant) if filters_with_variant else ""
+                    )
+                return ""
+
+            # Add the flag column
+            filtered_df = filtered_df.with_columns(
+                [
+                    pl.struct(["#CHROM", "POS", "REF", "ALT"])
+                    .map_elements(
+                        lambda x: check_higher_impact(
+                            x["#CHROM"], x["POS"], x["REF"], x["ALT"]
+                        ),
+                        return_dtype=pl.Utf8,
+                    )
+                    .alias("flag_higher_impact")
+                ]
+            )
+        else:
+            # No higher priority filters
+            filtered_df = filtered_df.with_columns(
+                [pl.lit("").alias("flag_higher_impact")]
+            )
+
+        # Write to file
+        output_filename = f"{output_prefix}_{name}.{output_format}"
+        output_path = Path(output_filename)
+
+        if output_format == "tsv":
+            filtered_df.write_csv(output_path, separator="\t")
+        elif output_format == "parquet":
+            filtered_df.write_parquet(output_path)
+
+        click.echo(
+            f"Written {filtered_df.shape[0]} variants to {output_path}", err=True
+        )
+
+
+def apply_filters_and_write(
+    df: pl.DataFrame,
+    filter_config: dict,
+    output_prefix: Optional[str],
+    output_format: str,
+    verbose: bool,
+):
+    """Apply filters and write output files."""
+    # Apply quality filters first
+    quality_config = filter_config.get("quality", {})
+    filtered_df = apply_quality_filters(df, quality_config, verbose)
+
+    # Get impact filters
+    impact_config = filter_config.get("impact", [])
+
+    if not impact_config:
+        # No impact filters - write single output file
+        if not output_prefix:
+            # Write to stdout
+            if output_format != "tsv":
+                click.echo(
+                    "Error: stdout output only supported for TSV format.",
+                    err=True,
+                )
+                raise click.Abort()
+            click.echo(filtered_df.write_csv(separator="\t"), nl=False)
+        else:
+            output_path = Path(f"{output_prefix}.{output_format}")
+
+            if output_format == "tsv":
+                filtered_df.write_csv(output_path, separator="\t")
+            elif output_format == "parquet":
+                filtered_df.write_parquet(output_path)
+
+            click.echo(f"Formatted data written to {output_path}", err=True)
+    else:
+        # Apply impact filters and create multiple output files
+        if not output_prefix:
+            click.echo(
+                "Error: Output prefix required when using impact filters.",
+                err=True,
+            )
+            raise click.Abort()
+
+        apply_impact_filters(
+            filtered_df,
+            impact_config,
+            output_prefix,
+            output_format,
+            verbose,
+        )
 
 
 def read_pedigree(pedigree_path: Path) -> pl.DataFrame:
