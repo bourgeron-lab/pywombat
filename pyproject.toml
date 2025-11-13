@@ -1,11 +1,25 @@
 [project]
 name = "pywombat"
 version = "0.1.0"
-description = "Add your description here"
+description = "A CLI tool for processing and filtering bcftools tabulated TSV files with pedigree support"
 readme = "README.md"
 authors = [{ name = "Freddy Cliquet", email = "fcliquet@pasteur.fr" }]
 requires-python = ">=3.12"
 dependencies = ["polars>=0.19.0", "click>=8.1.0", "pyyaml>=6.0"]
+license = { text = "MIT" }
+keywords = ["vcf", "bioinformatics", "genomics", "pedigree", "variant-calling"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+]
+
+[project.urls]
+Homepage = "https://github.com/bourgeron-lab/pywombat"
+Repository = "https://github.com/bourgeron-lab/pywombat"
+Issues = "https://github.com/bourgeron-lab/pywombat/issues"
 
 [project.scripts]
 wombat = "pywombat.cli:cli"
