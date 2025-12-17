@@ -40,6 +40,11 @@ import yaml
     type=click.Path(exists=True, path_type=Path),
     help="Filter configuration YAML file to apply quality and impact filters.",
 )
+@click.option(
+    "--debug",
+    type=str,
+    help="Debug mode: show rows matching chrom:pos (e.g., chr11:70486013). Displays #CHROM, POS, VEP_SYMBOL, and columns from filter expression.",
+)
 def cli(
     input_file: Path,
     output: Optional[str],
@@ -47,6 +52,7 @@ def cli(
     verbose: bool,
     pedigree: Optional[Path],
     filter_config: Optional[Path],
+    debug: Optional[str],
 ):
     """
     Wombat: A tool for processing bcftools tabulated TSV files.
@@ -93,6 +99,11 @@ def cli(
             if verbose:
                 click.echo(f"Reading filter config: {filter_config}", err=True)
             filter_config_data = load_filter_config(filter_config)
+
+        # Debug mode: show specific variant
+        if debug:
+            debug_variant(input_file, pedigree_df, filter_config_data, debug, verbose)
+            return
 
         # Determine output prefix
         if output is None:
@@ -145,6 +156,95 @@ def cli(
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         raise click.Abort()
+
+
+def debug_variant(
+    input_file: Path,
+    pedigree_df: Optional[pl.DataFrame],
+    filter_config: Optional[dict],
+    debug_pos: str,
+    verbose: bool,
+):
+    """Debug mode: display rows matching a specific chrom:pos."""
+    # Parse debug position
+    if ":" not in debug_pos:
+        click.echo(
+            "Error: Debug position must be in format 'chrom:pos' (e.g., chr11:70486013)",
+            err=True,
+        )
+        raise click.Abort()
+
+    chrom, pos = debug_pos.split(":", 1)
+    try:
+        pos = int(pos)
+    except ValueError:
+        click.echo(f"Error: Position must be an integer, got '{pos}'", err=True)
+        raise click.Abort()
+
+    if verbose:
+        click.echo(f"Debug mode: searching for {chrom}:{pos}", err=True)
+
+    # Read and format the data
+    df = pl.read_csv(input_file, separator="\t")
+    formatted_df = format_bcftools_tsv(df, pedigree_df)
+
+    # Filter to matching rows
+    matching_rows = formatted_df.filter(
+        (pl.col("#CHROM") == chrom) & (pl.col("POS") == pos)
+    )
+
+    if matching_rows.shape[0] == 0:
+        click.echo(f"No rows found matching {chrom}:{pos}", err=True)
+        return
+
+    # Determine which columns to display
+    columns_to_show = ["#CHROM", "POS"]
+
+    # Add VEP_SYMBOL if it exists
+    if "VEP_SYMBOL" in matching_rows.columns:
+        columns_to_show.append("VEP_SYMBOL")
+
+    # Extract column names from expression if filter config provided
+    if filter_config and "expression" in filter_config:
+        expression = filter_config["expression"]
+        # Extract column names from expression using regex
+        # Match patterns like "column_name" before operators
+        column_pattern = r"\b([A-Za-z_][A-Za-z0-9_]*)\b\s*[=!<>]"
+        found_columns = re.findall(column_pattern, expression)
+
+        for col in found_columns:
+            if col in matching_rows.columns and col not in columns_to_show:
+                columns_to_show.append(col)
+
+    # Select only the columns we want to display
+    display_df = matching_rows.select(
+        [col for col in columns_to_show if col in matching_rows.columns]
+    )
+
+    # Replace null and NaN values with <null> and <NaN> for display
+    for col in display_df.columns:
+        if display_df[col].dtype in [pl.Float32, pl.Float64]:
+            # For numeric columns, handle both NaN and null
+            display_df = display_df.with_columns(
+                pl.when(pl.col(col).is_null())
+                .then(pl.lit("<null>"))
+                .when(pl.col(col).is_nan())
+                .then(pl.lit("<NaN>"))
+                .otherwise(pl.col(col).cast(pl.Utf8))
+                .alias(col)
+            )
+        else:
+            # For non-numeric columns, only handle null
+            display_df = display_df.with_columns(
+                pl.when(pl.col(col).is_null())
+                .then(pl.lit("<null>"))
+                .otherwise(pl.col(col).cast(pl.Utf8))
+                .alias(col)
+            )
+
+    # Display the results
+    click.echo(f"\nFound {matching_rows.shape[0]} row(s) matching {chrom}:{pos}:\n")
+    click.echo(display_df.write_csv(separator="\t"))
 
 
 def load_filter_config(config_path: Path) -> dict:
@@ -365,6 +465,30 @@ def parse_impact_filter_expression(expression: str, df: pl.DataFrame) -> pl.Expr
                     # Check if column exists
                     if col_name not in df.columns:
                         raise ValueError(f"Column '{col_name}' not found in dataframe")
+
+                    # Check for null value
+                    if value.upper() == "NULL":
+                        col_expr = pl.col(col_name)
+                        if op == "=":
+                            return col_expr.is_null()
+                        elif op == "!=":
+                            return ~col_expr.is_null()
+                        else:
+                            raise ValueError(
+                                f"Operator '{op}' not supported for null comparison, use = or !="
+                            )
+
+                    # Check for NaN value
+                    if value.upper() == "NAN":
+                        col_expr = pl.col(col_name).cast(pl.Float64, strict=False)
+                        if op == "=":
+                            return col_expr.is_nan()
+                        elif op == "!=":
+                            return ~col_expr.is_nan()
+                        else:
+                            raise ValueError(
+                                f"Operator '{op}' not supported for NaN comparison, use = or !="
+                            )
 
                     # Try to convert value to number, otherwise treat as string
                     try:
