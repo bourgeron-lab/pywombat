@@ -10,3 +10,11 @@ wheels/
 .venv
 output.tsv
 tests/*
+test.short.tabulated.filter_simple.tsv
+test.short.tabulated.filter_simple.tsv.gz
+test.short.tabulated.filter.tsv
+test.tabulated.filter.HIGH.tsv
+test.tabulated.filter.HIGH.tsv.gz
+test.tabulated.filter.MODERATE.tsv.gz
+test.tabulated.filter.RARE.tsv.gz
+.DS_Store

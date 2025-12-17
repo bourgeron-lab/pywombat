@@ -80,14 +80,6 @@ def cli(
         if verbose and is_gzipped:
             click.echo("Detected gzipped file", err=True)
 
-        # Read the TSV file (handles both plain and gzipped)
-        df = pl.read_csv(input_file, separator="\t")
-
-        if verbose:
-            click.echo(
-                f"Input shape: {df.shape[0]} rows, {df.shape[1]} columns", err=True
-            )
-
         # Read pedigree file if provided
         pedigree_df = None
         if pedigree:
@@ -95,16 +87,7 @@ def cli(
                 click.echo(f"Reading pedigree file: {pedigree}", err=True)
             pedigree_df = read_pedigree(pedigree)
 
-        # Process the dataframe
-        formatted_df = format_bcftools_tsv(df, pedigree_df)
-
-        if verbose:
-            click.echo(
-                f"Output shape: {formatted_df.shape[0]} rows, {formatted_df.shape[1]} columns",
-                err=True,
-            )
-
-        # Apply filters if provided
+        # Load filter config if provided
         filter_config_data = None
         if filter_config:
             if verbose:
@@ -128,30 +111,36 @@ def cli(
             else:
                 output = input_stem
 
-        # Apply filters and write output
+        # Use streaming approach with lazy API
+        if verbose:
+            click.echo("Processing with streaming mode...", err=True)
+
+        # Build lazy query
+        lazy_df = pl.scan_csv(input_file, separator="\t")
+
+        # Apply formatting transformations
+        lazy_df = format_bcftools_tsv_lazy(lazy_df, pedigree_df)
+
+        # Apply filters if provided
         if filter_config_data:
-            apply_filters_and_write(
-                formatted_df,
-                filter_config_data,
-                output,
-                output_format,
-                verbose,
-            )
-        else:
-            # No filters - write single output file
-            # Construct output filename with prefix and format
-            output_path = Path(f"{output}.{output_format}")
+            lazy_df = apply_filters_lazy(lazy_df, filter_config_data, verbose)
 
-            if output_format == "tsv":
-                formatted_df.write_csv(output_path, separator="\t")
-            elif output_format == "tsv.gz":
-                csv_content = formatted_df.write_csv(separator="\t")
-                with gzip.open(output_path, "wt") as f:
-                    f.write(csv_content)
-            elif output_format == "parquet":
-                formatted_df.write_parquet(output_path)
+        # Write output
+        output_path = Path(f"{output}.{output_format}")
 
-            click.echo(f"Formatted data written to {output_path}", err=True)
+        if output_format == "tsv":
+            lazy_df.sink_csv(output_path, separator="\t")
+        elif output_format == "tsv.gz":
+            # For gzip, we need to collect and write
+            df = lazy_df.collect()
+            csv_content = df.write_csv(separator="\t")
+            with gzip.open(output_path, "wt") as f:
+                f.write(csv_content)
+        elif output_format == "parquet":
+            lazy_df.sink_parquet(output_path)
+
+        if verbose:
+            click.echo(f"Data written to {output_path}", err=True)
 
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
@@ -955,6 +944,143 @@ def format_bcftools_tsv(
         melted_df = add_parent_genotypes(melted_df, pedigree_df)
 
     return melted_df
+
+
+def format_bcftools_tsv_lazy(
+    lazy_df: pl.LazyFrame, pedigree_df: Optional[pl.DataFrame] = None
+) -> pl.LazyFrame:
+    """
+    Format a bcftools tabulated TSV using lazy operations for streaming.
+
+    This is a simplified version that collects minimally for complex operations.
+    """
+    # For complex transformations like melting, we need to collect temporarily
+    # but we do this in a streaming fashion
+    df = lazy_df.collect(streaming=True)
+    formatted_df = format_bcftools_tsv(df, pedigree_df)
+    return formatted_df.lazy()
+
+
+def apply_filters_lazy(
+    lazy_df: pl.LazyFrame, filter_config: dict, verbose: bool = False
+) -> pl.LazyFrame:
+    """Apply quality and expression filters using lazy operations."""
+    quality_config = filter_config.get("quality", {})
+    expression = filter_config.get("expression")
+
+    # Apply quality filters
+    if quality_config:
+        # Filter: sample_gt must contain at least one '1' (default: true)
+        filter_no_alt = quality_config.get("filter_no_alt_allele", True)
+        if filter_no_alt:
+            lazy_df = lazy_df.filter(
+                pl.col("sample_gt").str.contains("1")
+                | pl.col("sample_gt").str.contains("2")
+            )
+
+        # Apply minimum depth filter
+        if "sample_dp_min" in quality_config:
+            min_dp = quality_config["sample_dp_min"]
+            lazy_df = lazy_df.filter(
+                pl.col("sample_dp").cast(pl.Float64, strict=False) >= min_dp
+            )
+
+        # Apply minimum GQ filter
+        if "sample_gq_min" in quality_config:
+            min_gq = quality_config["sample_gq_min"]
+            lazy_df = lazy_df.filter(
+                pl.col("sample_gq").cast(pl.Float64, strict=False) >= min_gq
+            )
+
+        # VAF filters for heterozygous (0/1 or 1/0)
+        if (
+            "sample_vaf_het_min" in quality_config
+            or "sample_vaf_het_max" in quality_config
+        ):
+            # Check if genotype is het (contains one '1' and one '0', no '2')
+            is_het = (
+                (pl.col("sample_gt").str.count_matches("1") == 1)
+                & (pl.col("sample_gt").str.count_matches("0") == 1)
+                & (~pl.col("sample_gt").str.contains("2"))
+            )
+
+            het_conditions = []
+            if "sample_vaf_het_min" in quality_config:
+                het_conditions.append(
+                    pl.col("sample_vaf") >= quality_config["sample_vaf_het_min"]
+                )
+            if "sample_vaf_het_max" in quality_config:
+                het_conditions.append(
+                    pl.col("sample_vaf") <= quality_config["sample_vaf_het_max"]
+                )
+
+            if het_conditions:
+                het_filter = het_conditions[0]
+                for cond in het_conditions[1:]:
+                    het_filter = het_filter & cond
+
+                lazy_df = lazy_df.filter(~is_het | het_filter)
+
+        # VAF filter for homozygous alternate (1/1)
+        if "sample_vaf_homalt_min" in quality_config:
+            is_homalt = pl.col("sample_gt") == "1/1"
+            lazy_df = lazy_df.filter(
+                ~is_homalt
+                | (pl.col("sample_vaf") >= quality_config["sample_vaf_homalt_min"])
+            )
+
+        # VAF filter for homozygous reference (0/0)
+        if "sample_vaf_hom_ref_max" in quality_config:
+            is_hom_ref = pl.col("sample_gt") == "0/0"
+            lazy_df = lazy_df.filter(
+                ~is_hom_ref
+                | (pl.col("sample_vaf") <= quality_config["sample_vaf_hom_ref_max"])
+            )
+
+        # Apply same filters to parents if requested
+        apply_to_parents = quality_config.get("apply_to_parents", False)
+        if apply_to_parents:
+            # Father filters
+            if "sample_dp_min" in quality_config:
+                min_dp = quality_config["sample_dp_min"]
+                lazy_df = lazy_df.filter(
+                    (pl.col("father_dp").is_null())
+                    | (pl.col("father_dp").cast(pl.Float64, strict=False) >= min_dp)
+                )
+
+            if "sample_gq_min" in quality_config:
+                min_gq = quality_config["sample_gq_min"]
+                lazy_df = lazy_df.filter(
+                    (pl.col("father_gq").is_null())
+                    | (pl.col("father_gq").cast(pl.Float64, strict=False) >= min_gq)
+                )
+
+            # Mother filters
+            if "sample_dp_min" in quality_config:
+                min_dp = quality_config["sample_dp_min"]
+                lazy_df = lazy_df.filter(
+                    (pl.col("mother_dp").is_null())
+                    | (pl.col("mother_dp").cast(pl.Float64, strict=False) >= min_dp)
+                )
+
+            if "sample_gq_min" in quality_config:
+                min_gq = quality_config["sample_gq_min"]
+                lazy_df = lazy_df.filter(
+                    (pl.col("mother_gq").is_null())
+                    | (pl.col("mother_gq").cast(pl.Float64, strict=False) >= min_gq)
+                )
+
+    # Apply expression filter if provided
+    if expression:
+        if verbose:
+            click.echo(f"Applying expression filter: {expression}", err=True)
+
+        # We need to collect temporarily to use parse_impact_filter_expression
+        df = lazy_df.collect(streaming=True)
+        filter_expr = parse_impact_filter_expression(expression, df)
+        lazy_df = df.lazy().filter(filter_expr)
+
+    return lazy_df
 
 
 if __name__ == "__main__":
