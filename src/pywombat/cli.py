@@ -1,5 +1,6 @@
 """CLI for wombat tool."""
 
+import gzip
 import re
 import warnings
 from pathlib import Path
@@ -22,9 +23,9 @@ import yaml
     "-f",
     "--format",
     "output_format",
-    type=click.Choice(["tsv", "parquet"], case_sensitive=False),
+    type=click.Choice(["tsv", "tsv.gz", "parquet"], case_sensitive=False),
     default="tsv",
-    help="Output format: tsv (default) or parquet.",
+    help="Output format: tsv (default), tsv.gz (compressed), or parquet.",
 )
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose output.")
 @click.option(
@@ -73,7 +74,13 @@ def cli(
         if verbose:
             click.echo(f"Reading input file: {input_file}", err=True)
 
-        # Read the TSV file
+        # Detect if file is gzipped based on extension
+        is_gzipped = str(input_file).endswith(".gz")
+
+        if verbose and is_gzipped:
+            click.echo("Detected gzipped file", err=True)
+
+        # Read the TSV file (handles both plain and gzipped)
         df = pl.read_csv(input_file, separator="\t")
 
         if verbose:
@@ -104,6 +111,23 @@ def cli(
                 click.echo(f"Reading filter config: {filter_config}", err=True)
             filter_config_data = load_filter_config(filter_config)
 
+        # Determine output prefix
+        if output is None:
+            # Generate default output prefix from input filename
+            input_stem = input_file.name
+            # Remove .tsv.gz or .tsv extension
+            if input_stem.endswith(".tsv.gz"):
+                input_stem = input_stem[:-7]  # Remove .tsv.gz
+            elif input_stem.endswith(".tsv"):
+                input_stem = input_stem[:-4]  # Remove .tsv
+
+            # Add config name if filter is provided
+            if filter_config:
+                config_name = filter_config.stem  # Get basename without extension
+                output = f"{input_stem}.{config_name}"
+            else:
+                output = input_stem
+
         # Apply filters and write output
         if filter_config_data:
             apply_filters_and_write(
@@ -115,25 +139,19 @@ def cli(
             )
         else:
             # No filters - write single output file
-            if output:
-                # Construct output filename with prefix and format
-                output_path = Path(f"{output}.{output_format}")
+            # Construct output filename with prefix and format
+            output_path = Path(f"{output}.{output_format}")
 
-                if output_format == "tsv":
-                    formatted_df.write_csv(output_path, separator="\t")
-                elif output_format == "parquet":
-                    formatted_df.write_parquet(output_path)
+            if output_format == "tsv":
+                formatted_df.write_csv(output_path, separator="\t")
+            elif output_format == "tsv.gz":
+                csv_content = formatted_df.write_csv(separator="\t")
+                with gzip.open(output_path, "wt") as f:
+                    f.write(csv_content)
+            elif output_format == "parquet":
+                formatted_df.write_parquet(output_path)
 
-                click.echo(f"Formatted data written to {output_path}", err=True)
-            else:
-                # Write to stdout (only for TSV format)
-                if output_format != "tsv":
-                    click.echo(
-                        "Error: stdout output only supported for TSV format. Use -o to specify an output prefix for parquet.",
-                        err=True,
-                    )
-                    raise click.Abort()
-                click.echo(formatted_df.write_csv(separator="\t"), nl=False)
+            click.echo(f"Formatted data written to {output_path}", err=True)
 
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
@@ -555,11 +573,15 @@ def apply_impact_filters(
             )
 
         # Write to file
-        output_filename = f"{output_prefix}_{name}.{output_format}"
+        output_filename = f"{output_prefix}.{name}.{output_format}"
         output_path = Path(output_filename)
 
         if output_format == "tsv":
             filtered_df.write_csv(output_path, separator="\t")
+        elif output_format == "tsv.gz":
+            csv_content = filtered_df.write_csv(separator="\t")
+            with gzip.open(output_path, "wt") as f:
+                f.write(csv_content)
         elif output_format == "parquet":
             filtered_df.write_parquet(output_path)
 
@@ -599,6 +621,10 @@ def apply_filters_and_write(
 
             if output_format == "tsv":
                 filtered_df.write_csv(output_path, separator="\t")
+            elif output_format == "tsv.gz":
+                csv_content = filtered_df.write_csv(separator="\t")
+                with gzip.open(output_path, "wt") as f:
+                    f.write(csv_content)
             elif output_format == "parquet":
                 filtered_df.write_parquet(output_path)
 
