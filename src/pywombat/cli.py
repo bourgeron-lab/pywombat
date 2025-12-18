@@ -127,7 +127,20 @@ def cli(
             click.echo("Processing with streaming mode...", err=True)
 
         # Build lazy query
-        lazy_df = pl.scan_csv(input_file, separator="\t")
+        # Force certain columns to string type
+        string_columns = [
+            "FID",
+            "sample_id",
+            "father_id",
+            "mother_id",
+            "FatherBarcode",
+            "MotherBarcode",
+            "sample",
+        ]
+        schema_overrides = {col: pl.Utf8 for col in string_columns}
+        lazy_df = pl.scan_csv(
+            input_file, separator="\t", schema_overrides=schema_overrides
+        )
 
         # Apply formatting transformations
         lazy_df = format_bcftools_tsv_lazy(lazy_df, pedigree_df)
@@ -185,7 +198,18 @@ def debug_variant(
         click.echo(f"Debug mode: searching for {chrom}:{pos}", err=True)
 
     # Read and format the data
-    df = pl.read_csv(input_file, separator="\t")
+    # Force certain columns to string type
+    string_columns = [
+        "FID",
+        "sample_id",
+        "father_id",
+        "mother_id",
+        "FatherBarcode",
+        "MotherBarcode",
+        "sample",
+    ]
+    schema_overrides = {col: pl.Utf8 for col in string_columns}
+    df = pl.read_csv(input_file, separator="\t", schema_overrides=schema_overrides)
     formatted_df = format_bcftools_tsv(df, pedigree_df)
 
     # Filter to matching rows
@@ -771,7 +795,18 @@ def read_pedigree(pedigree_path: Path) -> pl.DataFrame:
         DataFrame with columns: sample_id, father_id, mother_id
     """
     # Try reading with header first
-    df = pl.read_csv(pedigree_path, separator="\t")
+    # Force certain columns to string type
+    string_columns = [
+        "FID",
+        "sample_id",
+        "father_id",
+        "mother_id",
+        "FatherBarcode",
+        "MotherBarcode",
+        "sample",
+    ]
+    schema_overrides = {col: pl.Utf8 for col in string_columns}
+    df = pl.read_csv(pedigree_path, separator="\t", schema_overrides=schema_overrides)
 
     # Check if first row has 'FID' in first column (indicates header)
     if df.columns[0] == "FID" or "sample_id" in df.columns:
