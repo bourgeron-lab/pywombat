@@ -1,93 +1,124 @@
-# PyWombat
+# PyWombat 🦘
 
-A CLI tool for processing bcftools tabulated TSV files.
+A high-performance CLI tool for processing and filtering bcftools tabulated TSV files with advanced filtering capabilities, pedigree support, and de novo mutation detection.
 
-## Installation
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-This is a UV-managed Python package. To install:
+## Features
+
+✨ **Fast Processing**: Uses Polars for efficient data handling  
+🔬 **Quality Filtering**: Configurable depth, quality, and VAF thresholds  
+👨‍👩‍👧 **Pedigree Support**: Trio and family analysis with parent genotypes  
+🧬 **De Novo Detection**: Sex-chromosome-aware DNM identification  
+📊 **Flexible Output**: TSV, compressed TSV, or Parquet formats  
+🎯 **Expression Filters**: Complex filtering with logical expressions  
+⚡ **Streaming Mode**: Memory-efficient processing of large files
+
+---
+
+## Quick Start
+
+### One-Time Usage (Recommended for Most Users)
+
+Use `uvx` to run PyWombat without installation:
 
 ```bash
+# Basic formatting
+uvx pywombat input.tsv -o output
+
+# With filtering
+uvx pywombat input.tsv -F examples/rare_variants_high_impact.yml -o output
+
+# De novo mutation detection
+uvx pywombat input.tsv --pedigree pedigree.tsv \
+  -F examples/de_novo_mutations.yml -o denovo
+```
+
+### Installation for Development/Repeated Use
+
+```bash
+# Clone the repository
+git clone https://github.com/bourgeron-lab/pywombat.git
+cd pywombat
+
+# Install with uv
 uv sync
+
+# Run with uv run
+uv run wombat input.tsv -o output
 ```
 
-## Usage
+---
 
-The `wombat` command processes bcftools tabulated TSV files:
+## What Does PyWombat Do?
+
+PyWombat transforms bcftools tabulated TSV files into analysis-ready formats by:
+
+1. **Expanding the `(null)` INFO column**: Extracts all `NAME=value` fields (e.g., `DP=30;AF=0.5;AC=2`) into separate columns
+2. **Melting sample columns**: Converts wide-format sample data into long format with one row per variant-sample combination
+3. **Extracting genotype data**: Parses `GT:DP:GQ:AD` format into separate columns with calculated VAF
+4. **Adding parent data**: Joins father/mother genotypes when pedigree is provided
+5. **Applying filters**: Quality filters, expression-based filters, or de novo detection
+
+### Example Transformation
+
+**Input (Wide Format):**
+
+```tsv
+#CHROM  POS  REF  ALT  (null)              Sample1:GT:DP:GQ:AD  Sample2:GT:DP:GQ:AD
+chr1    100  A    T    DP=30;AF=0.5;AC=2   0/1:15:99:5,10      1/1:18:99:0,18
+```
+
+**Output (Long Format):**
+
+```tsv
+#CHROM  POS  REF  ALT  AC  AF   DP  sample   sample_gt  sample_dp  sample_gq  sample_ad  sample_vaf
+chr1    100  A    T    2   0.5  30  Sample1  0/1        15         99         10         0.6667
+chr1    100  A    T    2   0.5  30  Sample2  1/1        18         99         18         1.0
+```
+
+**Generated Columns:**
+
+- `sample`: Sample identifier
+- `sample_gt`: Genotype (e.g., 0/1, 1/1)
+- `sample_dp`: Read depth (total coverage)
+- `sample_gq`: Genotype quality score
+- `sample_ad`: Alternate allele depth (from second value in AD field)
+- `sample_vaf`: Variant allele frequency (sample_ad / sample_dp)
+
+---
+
+## Basic Usage
+
+### Format Without Filtering
 
 ```bash
-# Format a bcftools TSV file and print to stdout
-wombat input.tsv
+# Output to file
+uvx pywombat input.tsv -o output
 
-# Format and save to output file (creates output.tsv by default)
-wombat input.tsv -o output
+# Output to stdout (useful for piping)
+uvx pywombat input.tsv
 
-# Format and save as parquet
-wombat input.tsv -o output -f parquet
-wombat input.tsv -o output --format parquet
+# Compressed output
+uvx pywombat input.tsv -o output -f tsv.gz
 
-# Format with pedigree information to add parent genotypes
-wombat input.tsv --pedigree pedigree.tsv -o output
+# Parquet format (fastest for large files)
+uvx pywombat input.tsv -o output -f parquet
+
+# With verbose output
+uvx pywombat input.tsv -o output --verbose
 ```
 
-### What does `wombat` do?
+### With Pedigree (Trio/Family Analysis)
 
-The `wombat` command processes bcftools tabulated TSV files by:
+Add parent genotype information for inheritance analysis:
 
-1. **Expanding the `(null)` column**: This column contains multiple fields in the format `NAME=value` separated by semicolons (e.g., `DP=30;AF=0.5;AC=2`). Each field is extracted into its own column.
-
-2. **Preserving the `CSQ` column**: The CSQ (Consequence) column is preserved as-is and not melted, allowing VEP annotations to remain intact.
-
-3. **Melting and splitting sample columns**: After the `(null)` column, there are typically sample columns with values in `GT:DP:GQ:AD` format. The tool:
-   - Extracts the sample name (the part before the first `:` character)
-   - Transforms the wide format into long format
-   - Creates a `sample` column with the sample names
-   - Splits the sample values into separate columns:
-     - `sample_gt`: Genotype (e.g., 0/1, 1/1)
-     - `sample_dp`: Read depth
-     - `sample_gq`: Genotype quality
-     - `sample_ad`: Allele depth (takes the second value from comma-separated list)
-     - `sample_vaf`: Variant allele frequency (calculated as sample_ad / sample_dp)
-
-### Example
-
-**Input:**
-
-```tsv
-CHROM POS REF ALT (null) Sample1:GT:Sample1:DP:Sample1:GQ:Sample1:AD Sample2:GT:Sample2:DP:Sample2:GQ:Sample2:AD
-chr1 100 A T DP=30;AF=0.5;AC=2 0/1:15:99:5,10 1/1:18:99:0,18
+```bash
+uvx pywombat input.tsv --pedigree pedigree.tsv -o output
 ```
 
-**Output:**
-
-```tsv
-CHROM POS REF ALT AC AF DP sample sample_gt sample_dp sample_gq sample_ad sample_vaf
-chr1 100 A T 2 0.5 30 Sample1 0/1 15 99 10 0.6667
-chr1 100 A T 2 0.5 30 Sample2 1/1 18 99 18 1.0
-```
-
-Notes:
-
-- The `sample_ad` column contains the second value from the AD field (e.g., from `5,10` it extracts `10`)
-- The `sample_vaf` column is the variant allele frequency calculated as `sample_ad / sample_dp`
-- By default, output is in TSV format. Use `-f parquet` to output as Parquet files
-- The `-o` option specifies an output prefix (e.g., `-o output` creates `output.tsv` or `output.parquet`)
-
-### Pedigree Support
-
-You can provide a pedigree file with the `--pedigree` option to add parent genotype information to the output. This enables trio analysis by including the father's and mother's genotypes for each sample.
-
-**Pedigree File Format:**
-
-The pedigree file should be a tab-separated file with the following columns:
-
-- `FID`: Family ID
-- `sample_id`: Sample identifier (matches the sample names in the VCF)
-- `FatherBarcode`: Father's sample identifier (use `0` or `-9` if unknown)
-- `MotherBarcode`: Mother's sample identifier (use `0` or `-9` if unknown)
-- `Sex`: Sex of the sample (optional)
-- `Pheno`: Phenotype information (optional)
-
-Example pedigree file:
+**Pedigree File Format** (tab-separated):
 
 ```tsv
 FID sample_id FatherBarcode MotherBarcode Sex Pheno
@@ -96,26 +127,490 @@ FAM1 Father1 0 0 1 1
 FAM1 Mother1 0 0 2 1
 ```
 
-**Output with Pedigree:**
+- `FID`: Family ID
+- `sample_id`: Sample name (must match VCF)
+- `FatherBarcode`: Father's sample name (0 = unknown)
+- `MotherBarcode`: Mother's sample name (0 = unknown)
+- `Sex`: 1=male, 2=female (or M/F)
+- `Pheno`: 1=unaffected, 2=affected
 
-When using `--pedigree`, the output will include additional columns for each parent:
+**Output with pedigree includes additional columns:**
 
-- `father_gt`, `father_dp`, `father_gq`, `father_ad`, `father_vaf`: Father's genotype information
-- `mother_gt`, `mother_dp`, `mother_gq`, `mother_ad`, `mother_vaf`: Mother's genotype information
+- `father_gt`, `father_dp`, `father_gq`, `father_ad`, `father_vaf`
+- `mother_gt`, `mother_dp`, `mother_gq`, `mother_ad`, `mother_vaf`
 
-These columns will contain the parent's genotype data for the same variant, allowing you to analyze inheritance patterns.
+---
+
+## Advanced Filtering
+
+PyWombat supports two types of filtering:
+
+1. **Expression-based filtering**: For rare variants, impact filtering, frequency filtering
+2. **De novo mutation detection**: Specialized logic for identifying DNMs in trios/families
+
+### 1. Rare Variant Filtering
+
+Filter for ultra-rare, high-impact variants:
+
+```bash
+uvx pywombat input.tsv \
+  -F examples/rare_variants_high_impact.yml \
+  -o rare_variants
+```
+
+**Configuration** (`rare_variants_high_impact.yml`):
+
+```yaml
+quality:
+  sample_dp_min: 10           # Minimum read depth
+  sample_gq_min: 19           # Minimum genotype quality
+  sample_vaf_het_min: 0.25    # Het VAF range: 25-75%
+  sample_vaf_het_max: 0.75
+  sample_vaf_homalt_min: 0.85 # Hom alt VAF ≥ 85%
+  apply_to_parents: true      # Also filter parent genotypes
+  filter_no_alt_allele: true  # Exclude 0/0 genotypes
+
+expression: "VEP_CANONICAL = YES & VEP_IMPACT = HIGH & VEP_LoF = HC & VEP_LoF_flags = . & ( fafmax_faf95_max_genomes = null | fafmax_faf95_max_genomes <= 0.001 )"
+```
+
+**What this does:**
+
+- Filters for canonical transcripts with HIGH impact
+- Loss-of-function (LoF) with high confidence, no flags
+- Ultra-rare: ≤0.1% frequency in gnomAD genomes
+- Stringent quality: DP≥10, GQ≥19, appropriate VAF
+
+### 2. De Novo Mutation Detection
+
+Identify de novo mutations in trio data:
+
+```bash
+uvx pywombat input.tsv \
+  --pedigree pedigree.tsv \
+  -F examples/de_novo_mutations.yml \
+  -o denovo
+```
+
+**Configuration** (`de_novo_mutations.yml`):
+
+```yaml
+quality:
+  sample_dp_min: 10
+  sample_gq_min: 18
+  sample_vaf_min: 0.20
+
+dnm:
+  enabled: true
+  parent_dp_min: 10          # Parent quality thresholds
+  parent_gq_min: 18
+  parent_vaf_max: 0.02       # Max 2% VAF in parents
+  
+  sample_vaf_hemizygous_min: 0.85  # For X male, Y, and hom variants
+  
+  fafmax_faf95_max_genomes_max: 0.001  # Max 0.1% in gnomAD
+  genomes_filters_pass_only: true      # Only PASS variants
+  
+  par_regions:               # Pseudo-autosomal regions (GRCh38)
+    grch38:
+      PAR1:
+        chrom: X
+        start: 10000
+        end: 2781479
+      PAR2:
+        chrom: X
+        start: 155701383
+        end: 156030895
+```
+
+**Sex-Chromosome Aware Logic:**
+
+- **Autosomes & PAR**: Both parents must be 0/0 with VAF<2%
+- **X in males (non-PAR)**: Mother must be 0/0, father not informative
+- **Y in males**: Father must be 0/0, mother N/A
+- **Hemizygous variants**: Require VAF ≥ 85%
+
+---
+
+## Expression-Based Filtering
+
+Create custom filters using logical expressions:
+
+### Available Operators
+
+- **Comparison**: `=`, `!=`, `<`, `>`, `<=`, `>=`
+- **Logical**: `&` (AND), `|` (OR)
+- **Grouping**: `(`, `)`
+- **Null checks**: `= null`, `!= null`
+
+### Example Expressions
+
+```yaml
+# High or moderate impact with low frequency
+expression: "(VEP_IMPACT = HIGH | VEP_IMPACT = MODERATE) & gnomad_AF < 0.001"
+
+# Canonical transcripts with CADD score
+expression: "VEP_CANONICAL = YES & CADD_PHRED >= 20"
+
+# Specific consequence types
+expression: "VEP_Consequence = frameshift_variant | VEP_Consequence = stop_gained"
+
+# Multiple criteria
+expression: "VEP_IMPACT = HIGH & VEP_CANONICAL = YES & gnomad_AF < 0.01 & CADD_PHRED >= 25"
+```
+
+---
+
+## Debug Mode
+
+Inspect specific variants for troubleshooting:
+
+```bash
+uvx pywombat input.tsv \
+  -F config.yml \
+  --debug chr11:70486013
+```
+
+Shows:
+
+- All rows matching the position
+- VEP_SYMBOL if available
+- All columns mentioned in filter expression
+- Useful for understanding why variants pass/fail filters
+
+---
+
+## Output Formats
+
+### TSV (Default)
+
+```bash
+uvx pywombat input.tsv -o output          # Creates output.tsv
+uvx pywombat input.tsv -o output -f tsv   # Same as above
+```
+
+### Compressed TSV
+
+```bash
+uvx pywombat input.tsv -o output -f tsv.gz  # Creates output.tsv.gz
+```
+
+### Parquet (Fastest for Large Files)
+
+```bash
+uvx pywombat input.tsv -o output -f parquet  # Creates output.parquet
+```
+
+**When to use Parquet:**
+
+- Large cohorts (>100 samples)
+- Downstream analysis with Polars/Pandas
+- Need for fast repeated access
+- Storage efficiency
+
+---
+
+## Example Workflows
+
+### 1. Rare Disease Gene Discovery
+
+```bash
+# Step 1: Filter for rare, high-impact variants
+uvx pywombat cohort.tsv \
+  -F examples/rare_variants_high_impact.yml \
+  -o rare_variants
+
+# Step 2: Further filter with gene list (in downstream analysis)
+# Use the output TSV with your favorite tools (R, Python, etc.)
+```
+
+### 2. Autism Trio Analysis
+
+```bash
+# Identify de novo mutations in autism cohort
+uvx pywombat autism_trios.tsv \
+  --pedigree autism_pedigree.tsv \
+  -F examples/de_novo_mutations.yml \
+  -o autism_denovo \
+  --verbose
+
+# Review output for genes in autism risk lists
+```
+
+### 3. Multi-Family Rare Variant Analysis
+
+```bash
+# Process multiple families together
+uvx pywombat families.tsv \
+  --pedigree families_pedigree.tsv \
+  -F examples/rare_variants_high_impact.yml \
+  -o families_rare_variants \
+  -f parquet  # Parquet for fast downstream analysis
+```
+
+### 4. Custom Expression Filter
+
+Create `custom_filter.yml`:
+
+```yaml
+quality:
+  sample_dp_min: 15
+  sample_gq_min: 20
+  sample_vaf_het_min: 0.30
+  sample_vaf_het_max: 0.70
+
+expression: "VEP_IMPACT = HIGH & (gnomad_AF < 0.0001 | gnomad_AF = null)"
+```
+
+Apply:
+
+```bash
+uvx pywombat input.tsv -F custom_filter.yml -o output
+```
+
+---
+
+## Input Requirements
+
+### bcftools Tabulated Format
+
+PyWombat expects TSV files created with bcftools:
+
+```bash
+# From VCF to tabulated TSV
+bcftools query -HH -f '%CHROM\t%POS\t%REF\t%ALT\t%FILTER\t%INFO[\t%GT:%DP:%GQ:%AD]\n' \
+  input.vcf.gz > input.tsv
+
+# With specific INFO fields
+bcftools query -HH \
+  -f '%CHROM\t%POS\t%REF\t%ALT\t%FILTER\t%INFO/DP;%INFO/AF;%INFO/AC[\t%GT:%DP:%GQ:%AD]\n' \
+  input.vcf.gz > input.tsv
+```
+
+**Expected format:**
+
+- Tab-separated values
+- Header row with column names (use `-HH` for proper headers)
+- `(null)` column containing INFO fields
+- Sample columns in `GT:DP:GQ:AD` format (or similar)
+- Optional FILTER column for quality control
+
+### VEP Annotations
+
+For expression-based filtering on VEP annotations, a two-step process is required:
+
+#### Step 1: Split VEP CSQ Field
+
+**IMPORTANT**: PyWombat requires VEP annotations to be split into individual fields with the `VEP_` prefix:
+
+```bash
+# Split VEP CSQ field - creates one row per transcript/consequence
+# This prefixes all CSQ columns with "VEP_" (e.g., VEP_SYMBOL, VEP_IMPACT)
+bcftools +split-vep -c - -p VEP_ -O b -o annotated.split.bcf input.vcf.gz
+```
+
+#### Step 2: Convert to Tabulated Format
+
+```bash
+# Extract to TSV with genotype information
+bcftools query -HH \
+  -f '%CHROM\t%POS\t%REF\t%ALT\t%FILTER\t%INFO[\t%GT:%DP:%GQ:%AD]\n' \
+  annotated.split.bcf > annotated.tsv
+```
+
+#### Complete VEP Workflow
+
+```bash
+# 1. Annotate with VEP
+vep -i input.vcf.gz \
+  --cache --offline \
+  --format vcf \
+  --vcf \
+  --everything \
+  --canonical \
+  --plugin LoF \
+  -o annotated.vcf.gz
+
+# 2. Split VEP CSQ field (REQUIRED for PyWombat)
+bcftools +split-vep -c - -p VEP_ -O b -o annotated.split.bcf annotated.vcf.gz
+
+# 3. Convert to tabulated format
+bcftools query -HH \
+  -f '%CHROM\t%POS\t%REF\t%ALT\t%FILTER\t%INFO[\t%GT:%DP:%GQ:%AD]\n' \
+  annotated.split.bcf > annotated.tsv
+
+# 4. Process with PyWombat
+uvx pywombat annotated.tsv -F examples/rare_variants_high_impact.yml -o output
+```
+
+**Why split-vep is required:**
+
+- Creates one row per transcript/consequence (instead of all in one CSQ field)
+- Prefixes VEP fields with `VEP_` making them accessible in expressions
+- Enables filtering on `VEP_CANONICAL`, `VEP_IMPACT`, `VEP_LoF`, etc.
+
+#### Pipeline Optimization
+
+For production workflows, these commands can be piped together:
+
+```bash
+# Efficient pipeline (single pass through data)
+bcftools +split-vep -c - -p VEP_ input.vcf.gz | \
+  bcftools query -HH -f '%CHROM\t%POS\t%REF\t%ALT\t%FILTER\t%INFO[\t%GT:%DP:%GQ:%AD]\n' | \
+  uvx pywombat - -F config.yml -o output
+```
+
+**Note**: For multiple filter configurations, it's more efficient to save the intermediate TSV file rather than regenerating it each time.
+
+### gnomAD Annotations
+
+For frequency filtering, annotate with gnomAD:
+
+```bash
+# Using bcftools annotate
+bcftools annotate -a gnomad.genomes.vcf.gz \
+  -c INFO/AF,INFO/fafmax_faf95_max \
+  input.vcf.gz -o annotated.vcf.gz
+```
+
+---
+
+## Configuration Examples
+
+See the [`examples/`](examples/) directory for complete configuration files:
+
+- **[`rare_variants_high_impact.yml`](examples/rare_variants_high_impact.yml)**: Ultra-rare, high-impact variants
+- **[`de_novo_mutations.yml`](examples/de_novo_mutations.yml)**: De novo mutation detection with sex-chromosome handling
+
+Each configuration file is fully documented with:
+
+- Parameter descriptions
+- Use case recommendations
+- Customization tips
+- Example command lines
+
+---
+
+## Performance Tips
+
+1. **Use streaming mode** (default): Efficient for most workflows
+2. **Parquet output**: Faster for large files and repeated analysis
+3. **Pre-filter with bcftools**: Filter by region/gene before PyWombat
+4. **Compressed input**: PyWombat handles `.gz` files natively
+5. **Filter early**: Apply quality filters before complex expression filters
+
+---
 
 ## Development
 
-This project uses:
+### Setup
 
-- **UV** for package management
-- **Polars** for fast data processing
-- **Click** for CLI interface
+```bash
+# Clone repository
+git clone https://github.com/bourgeron-lab/pywombat.git
+cd pywombat
 
-## Testing
+# Install dependencies
+uv sync
 
-Test files are available in the `tests/` directory:
+# Run tests (if available)
+uv run pytest
+```
 
-- `test.tabulated.tsv` - Real bcftools output
-- `test_small.tsv` - Small example for quick testing
+### Project Structure
+
+```
+pywombat/
+├── src/pywombat/
+│   ├── __init__.py
+│   └── cli.py           # Main CLI implementation
+├── examples/            # Configuration examples
+│   ├── README.md
+│   ├── rare_variants_high_impact.yml
+│   └── de_novo_mutations.yml
+├── tests/               # Test files and data
+├── pyproject.toml       # Project metadata
+└── README.md
+```
+
+### Technology Stack
+
+- **[Polars](https://pola.rs/)**: Fast DataFrame operations
+- **[Click](https://click.palletsprojects.com/)**: CLI interface
+- **[PyYAML](https://pyyaml.org/)**: Configuration parsing
+- **[uv](https://github.com/astral-sh/uv)**: Package management
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+**Issue**: `Column '(null)' not found`
+
+- **Solution**: Ensure input is bcftools tabulated format with INFO column
+
+**Issue**: `No parent genotypes found`
+
+- **Solution**: Check pedigree file format and sample name matching
+
+**Issue**: `DNM filter requires pedigree`
+
+- **Solution**: Add `--pedigree` option when using de novo config
+
+**Issue**: Variants missing from output
+
+- **Solution**: Use `--debug chr:pos` to see why variants are filtered
+
+**Issue**: Memory errors on large files
+
+- **Solution**: Files are processed in streaming mode by default; if issues persist, pre-filter with bcftools
+
+### Getting Help
+
+1. Check `--help` for command options: `uvx pywombat --help`
+2. Review example configurations in [`examples/`](examples/)
+3. Use `--debug` mode to inspect specific variants
+4. Use `--verbose` to see filtering steps
+
+---
+
+## Citation
+
+If you use PyWombat in your research, please cite:
+
+```
+PyWombat: A tool for processing and filtering bcftools tabulated files
+Bourgeron Lab, Institut Pasteur
+https://github.com/bourgeron-lab/pywombat
+```
+
+---
+
+## License
+
+MIT License - see [LICENSE](LICENSE) file for details
+
+---
+
+## Contributing
+
+Contributions are welcome! Please:
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Submit a pull request
+
+---
+
+## Authors
+
+- **Freddy Cliquet** - [Bourgeron Lab](https://research.pasteur.fr/en/team/human-genetics-and-cognitive-functions/), Institut Pasteur
+
+---
+
+## Acknowledgments
+
+- Bourgeron Lab for project support
+- Institut Pasteur for infrastructure
+- Polars team for the excellent DataFrame library

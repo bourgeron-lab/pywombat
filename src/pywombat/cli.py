@@ -122,7 +122,7 @@ def cli(
             else:
                 output = input_stem
 
-        # Use streaming approach with lazy API
+        # Process using streaming mode
         if verbose:
             click.echo("Processing with streaming mode...", err=True)
 
@@ -147,7 +147,9 @@ def cli(
 
         # Apply filters if provided
         if filter_config_data:
-            lazy_df = apply_filters_lazy(lazy_df, filter_config_data, verbose)
+            lazy_df = apply_filters_lazy(
+                lazy_df, filter_config_data, verbose, pedigree_df
+            )
 
         # Write output
         output_path = Path(f"{output}.{output_format}")
@@ -463,6 +465,321 @@ def apply_quality_filters(
     return df
 
 
+# ------------------ De novo (DNM) filter helpers ------------------
+
+
+def _chrom_short(chrom: str) -> str:
+    """Normalize chromosome name to short form (e.g., 'chrX' -> 'X')."""
+    if chrom is None:
+        return ""
+    chrom = str(chrom)
+    return chrom[3:] if chrom.lower().startswith("chr") else chrom
+
+
+def _pos_in_par(chrom: str, pos: int, par_regions: dict) -> bool:
+    """Return True if (chrom,pos) falls in any PAR region from config.
+
+    Normalizes chromosome names to match both 'X'/'chrX' formats.
+    """
+    if not par_regions:
+        return False
+
+    chrom_short = _chrom_short(chrom)
+
+    for assembly, regions in par_regions.items():
+        for region_name, region in regions.items():
+            region_chrom = _chrom_short(region.get("chrom", "X"))
+            start = int(region.get("start"))
+            end = int(region.get("end"))
+            # Normalize both to uppercase for comparison
+            if region_chrom.upper() == chrom_short.upper() and start <= pos <= end:
+                return True
+    return False
+
+
+def apply_de_novo_filter(
+    df: pl.DataFrame,
+    dnm_config: dict,
+    verbose: bool = False,
+    pedigree_df: Optional[pl.DataFrame] = None,
+) -> pl.DataFrame:
+    """Apply de novo detection filters to dataframe using vectorized operations.
+
+    dnm_config expected keys:
+      - sample_dp_min, sample_gq_min, sample_vaf_min
+      - parent_dp_min, parent_gq_min, parent_vaf_max
+      - par_regions: dict with PAR regions keyed by assembly
+
+    This function will read `sex` from `df` when present; otherwise it will use
+    the `pedigree_df` (which should contain `sample_id` and `sex`).
+    """
+    if not dnm_config:
+        return df
+
+    # Required thresholds
+    s_dp = dnm_config.get("sample_dp_min", 10)
+    s_gq = dnm_config.get("sample_gq_min", 18)
+    s_vaf = dnm_config.get("sample_vaf_min", 0.15)
+    s_vaf_hemizygous = dnm_config.get("sample_vaf_hemizygous_min", 0.85)
+
+    p_dp = dnm_config.get("parent_dp_min", 10)
+    p_gq = dnm_config.get("parent_gq_min", 18)
+    p_vaf = dnm_config.get("parent_vaf_max", 0.02)
+
+    fafmax_max = dnm_config.get("fafmax_faf95_max_genomes_max", None)
+    genomes_filters_pass_only = dnm_config.get("genomes_filters_pass_only", False)
+
+    par_regions = dnm_config.get("par_regions", {})
+
+    original = df.shape[0]
+
+    # Ensure we have parent identifiers (father/mother). Try to add from pedigree if missing.
+    if "father_id" not in df.columns or "mother_id" not in df.columns:
+        if pedigree_df is not None:
+            # Join pedigree to get father/mother/sample sex if needed
+            df = df.join(
+                pedigree_df, left_on="sample", right_on="sample_id", how="left"
+            )
+        else:
+            raise click.Abort(
+                "DNM filtering requires a pedigree (with father/mother IDs and sex)."
+            )
+
+    if verbose:
+        click.echo(
+            f"DNM: Starting with {df.shape[0]} variants after pedigree join", err=True
+        )
+
+    # Optimization #6: Early exit for variants with missing parents
+    df = df.filter(
+        pl.col("father_id").is_not_null() & pl.col("mother_id").is_not_null()
+    )
+
+    if verbose:
+        click.echo(
+            f"DNM: {df.shape[0]} variants after filtering missing parents", err=True
+        )
+
+    if df.shape[0] == 0:
+        if verbose:
+            click.echo(
+                f"De novo filter: {original} -> 0 rows (all missing parents)", err=True
+            )
+        return df
+
+    # Ensure we have sex information
+    if "sex" not in df.columns:
+        if pedigree_df is not None and "sex" in pedigree_df.columns:
+            # Re-join to get sex if not already present
+            if "sex" not in df.columns:
+                df = df.join(
+                    pedigree_df.select(["sample_id", "sex"]),
+                    left_on="sample",
+                    right_on="sample_id",
+                    how="left",
+                )
+        else:
+            raise click.Abort(
+                "DNM filtering requires sex information in the pedigree (column 'sex')."
+            )
+
+    # Filter out variants with missing/partial genotypes (containing '.')
+    # Sample genotype must be fully called (no '.', './0', '1/.', './.' etc.)
+    df = df.filter(
+        ~pl.col("sample_gt").str.contains(r"\.") & pl.col("sample_gt").is_not_null()
+    )
+
+    if verbose:
+        click.echo(
+            f"DNM: {df.shape[0]} variants after removing samples with missing/partial GT",
+            err=True,
+        )
+
+    # Ensure proband passes basic sample thresholds (DP, GQ)
+    # VAF threshold will be applied differently for hemizygous vs diploid variants
+    df = df.filter(
+        (pl.col("sample_dp").cast(pl.Float64, strict=False) >= s_dp)
+        & (pl.col("sample_gq").cast(pl.Float64, strict=False) >= s_gq)
+    )
+
+    if verbose:
+        click.echo(
+            f"DNM: {df.shape[0]} variants after proband QC (DP>={s_dp}, GQ>={s_gq})",
+            err=True,
+        )
+
+    if df.shape[0] == 0:
+        if verbose:
+            click.echo(
+                f"De novo filter: {original} -> 0 rows (sample QC failed)", err=True
+            )
+        return df
+
+    # Optimization #7: Vectorized parent filtering using when/then expressions
+    # Build chromosome-specific parent filters
+
+    # Ensure #CHROM is string type for operations (convert from categorical if needed)
+    if "#CHROM" in df.columns and df.schema["#CHROM"] == pl.Categorical:
+        df = df.with_columns(pl.col("#CHROM").cast(pl.Utf8))
+
+    # Normalize chromosome to short form for comparison
+    df = df.with_columns(
+        pl.col("#CHROM")
+        .str.replace("^chr", "")
+        .str.to_uppercase()
+        .alias("_chrom_short")
+    )
+
+    # Determine if variant is in PAR region (vectorized)
+    par_mask = pl.lit(False)
+    if par_regions:
+        for assembly, regions in par_regions.items():
+            for region_name, region in regions.items():
+                region_chrom = _chrom_short(region.get("chrom", "X")).upper()
+                start = int(region.get("start"))
+                end = int(region.get("end"))
+                par_mask = par_mask | (
+                    (pl.col("_chrom_short") == region_chrom)
+                    & (pl.col("POS") >= start)
+                    & (pl.col("POS") <= end)
+                )
+
+    df = df.with_columns(par_mask.alias("_in_par"))
+
+    # Normalize sex to uppercase string for comparison
+    df = df.with_columns(
+        pl.col("sex").cast(pl.Utf8).str.to_uppercase().alias("_sex_norm")
+    )
+
+    # Determine if variant is hemizygous (X in males outside PAR, or Y in males)
+    is_hemizygous = (
+        (pl.col("_chrom_short") == "X")
+        & (pl.col("_sex_norm").is_in(["1", "M"]))
+        & ~pl.col("_in_par")
+    ) | (pl.col("_chrom_short") == "Y")
+
+    # Determine if variant is homozygous (1/1, 2/2, etc.)
+    is_homozygous = pl.col("sample_gt").is_in(["1/1", "2/2", "3/3"])
+
+    # Apply VAF threshold: hemizygous and homozygous variants require higher VAF (>=0.85)
+    sample_vaf_filter = (
+        pl.when(is_hemizygous | is_homozygous)
+        .then(pl.col("sample_vaf") >= s_vaf_hemizygous)
+        .otherwise(pl.col("sample_vaf") > s_vaf)
+    )
+
+    df = df.filter(sample_vaf_filter)
+
+    if verbose:
+        click.echo(
+            f"DNM: {df.shape[0]} variants after VAF filtering (het>{s_vaf}, hom/hemizygous>={s_vaf_hemizygous})",
+            err=True,
+        )
+
+    # Apply fafmax_faf95_max_genomes filter if specified
+    if fafmax_max is not None:
+        if "fafmax_faf95_max_genomes" in df.columns:
+            df = df.filter(
+                (
+                    pl.col("fafmax_faf95_max_genomes").cast(pl.Float64, strict=False)
+                    <= fafmax_max
+                )
+                | pl.col("fafmax_faf95_max_genomes").is_null()
+            )
+            if verbose:
+                click.echo(
+                    f"DNM: {df.shape[0]} variants after fafmax_faf95_max_genomes filter (<={fafmax_max})",
+                    err=True,
+                )
+        elif verbose:
+            click.echo(
+                "DNM: Warning - fafmax_faf95_max_genomes column not found, skipping frequency filter",
+                err=True,
+            )
+
+    # Apply genomes_filters filter if specified
+    if genomes_filters_pass_only:
+        if "genomes_filters" in df.columns:
+            df = df.filter(
+                (pl.col("genomes_filters") == ".") | pl.col("genomes_filters").is_null()
+            )
+            if verbose:
+                click.echo(
+                    f"DNM: {df.shape[0]} variants after genomes_filters filter (pass only)",
+                    err=True,
+                )
+        elif verbose:
+            click.echo(
+                "DNM: Warning - genomes_filters column not found, skipping genomes_filters filter",
+                err=True,
+            )
+
+    # Build parent quality checks (common to all)
+    father_qual_ok = (pl.col("father_dp").cast(pl.Float64, strict=False) >= p_dp) & (
+        pl.col("father_gq").cast(pl.Float64, strict=False) >= p_gq
+    )
+    mother_qual_ok = (pl.col("mother_dp").cast(pl.Float64, strict=False) >= p_dp) & (
+        pl.col("mother_gq").cast(pl.Float64, strict=False) >= p_gq
+    )
+
+    father_vaf_ok = pl.col("father_vaf").is_null() | (pl.col("father_vaf") < p_vaf)
+    mother_vaf_ok = pl.col("mother_vaf").is_null() | (pl.col("mother_vaf") < p_vaf)
+
+    # Parent genotype checks: ensure no '.' in genotypes (no ./., 0/., 1/. etc.)
+    father_gt_ok = (
+        ~pl.col("father_gt").str.contains(r"\.") & pl.col("father_gt").is_not_null()
+    )
+    mother_gt_ok = (
+        ~pl.col("mother_gt").str.contains(r"\.") & pl.col("mother_gt").is_not_null()
+    )
+
+    # Build comprehensive parent filter using when/then logic
+    parent_filter = (
+        pl.when(pl.col("_in_par"))
+        # PAR region: both parents must be reference (autosomal-like) with valid GTs
+        .then(
+            father_qual_ok
+            & father_vaf_ok
+            & father_gt_ok
+            & mother_qual_ok
+            & mother_vaf_ok
+            & mother_gt_ok
+        )
+        .when(pl.col("_chrom_short") == "Y")
+        # Y chromosome: only check father (mother doesn't have Y), father GT must be valid
+        .then(father_qual_ok & father_vaf_ok & father_gt_ok)
+        .when((pl.col("_chrom_short") == "X") & (pl.col("_sex_norm").is_in(["1", "M"])))
+        # X chromosome, male proband: father is hemizygous, only check mother VAF and GT
+        .then(father_qual_ok & mother_qual_ok & mother_vaf_ok & mother_gt_ok)
+        # Default (autosomes or X/female): both parents must be reference with valid GTs
+        .otherwise(
+            father_qual_ok
+            & father_vaf_ok
+            & father_gt_ok
+            & mother_qual_ok
+            & mother_vaf_ok
+            & mother_gt_ok
+        )
+    )
+
+    # Apply parent filter
+    result = df.filter(parent_filter)
+
+    if verbose:
+        click.echo(
+            f"DNM: {result.shape[0]} variants after parent genotype filtering (parent DP>={p_dp}, GQ>={p_gq}, VAF<{p_vaf})",
+            err=True,
+        )
+
+    # Drop temporary columns
+    result = result.drop(["_chrom_short", "_in_par", "_sex_norm"])
+
+    if verbose:
+        click.echo(f"De novo filter: {original} -> {result.shape[0]} rows", err=True)
+
+    return result
+
+
 def parse_impact_filter_expression(expression: str, df: pl.DataFrame) -> pl.Expr:
     """Parse a filter expression string into a Polars expression."""
     # Replace operators with Polars equivalents
@@ -733,8 +1050,45 @@ def apply_filters_and_write(
     output_prefix: Optional[str],
     output_format: str,
     verbose: bool,
+    pedigree_df: Optional[pl.DataFrame] = None,
 ):
     """Apply filters and write output files."""
+    # If DNM mode is enabled, apply DNM-specific criteria and skip impact/frequency filters
+    if filter_config.get("dnm", {}).get("enabled", False):
+        dnm_cfg = {}
+        # Merge quality & dnm-specific thresholds into a single config for the function
+        dnm_cfg.update(filter_config.get("quality", {}))
+        dnm_cfg.update(filter_config.get("dnm", {}))
+
+        filtered_df = apply_de_novo_filter(
+            df, dnm_cfg, verbose, pedigree_df=pedigree_df
+        )
+
+        # Write result (same behavior as non-impact single-output)
+        if not output_prefix:
+            if output_format != "tsv":
+                click.echo(
+                    "Error: stdout output only supported for TSV format.",
+                    err=True,
+                )
+                raise click.Abort()
+            click.echo(filtered_df.write_csv(separator="\t"), nl=False)
+        else:
+            output_path = Path(f"{output_prefix}.{output_format}")
+
+            if output_format == "tsv":
+                filtered_df.write_csv(output_path, separator="\t")
+            elif output_format == "tsv.gz":
+                csv_content = filtered_df.write_csv(separator="\t")
+                with gzip.open(output_path, "wt") as f:
+                    f.write(csv_content)
+            elif output_format == "parquet":
+                filtered_df.write_parquet(output_path)
+
+            click.echo(f"De novo variants written to {output_path}", err=True)
+
+        return
+
     # Apply quality filters first
     quality_config = filter_config.get("quality", {})
     filtered_df = apply_quality_filters(df, quality_config, verbose)
@@ -832,8 +1186,16 @@ def read_pedigree(pedigree_path: Path) -> pl.DataFrame:
     if "FatherBarcode" in df.columns:
         df = df.rename({"FatherBarcode": "father_id", "MotherBarcode": "mother_id"})
 
-    # Select only the columns we need
-    pedigree_df = df.select(["sample_id", "father_id", "mother_id"])
+    # Normalize sex column name if present (e.g., 'Sex' or 'sex')
+    sex_col = next((c for c in df.columns if c.lower() == "sex"), None)
+    if sex_col and sex_col != "sex":
+        df = df.rename({sex_col: "sex"})
+
+    # Select only the columns we need (include sex if present)
+    select_cols = ["sample_id", "father_id", "mother_id"]
+    if "sex" in df.columns:
+        select_cols.append("sex")
+    pedigree_df = df.select(select_cols)
 
     # Replace 0 and -9 with null (indicating no parent)
     pedigree_df = pedigree_df.with_columns(
@@ -944,34 +1306,25 @@ def add_parent_genotypes(df: pl.DataFrame, pedigree_df: pl.DataFrame) -> pl.Data
     return df
 
 
-def format_bcftools_tsv(
-    df: pl.DataFrame, pedigree_df: Optional[pl.DataFrame] = None
-) -> pl.DataFrame:
+def format_expand_annotations(df: pl.DataFrame) -> pl.DataFrame:
     """
-    Format a bcftools tabulated TSV DataFrame.
+    Expand the (null) annotation column into separate columns.
+
+    This is a separate step that can be applied after filtering to avoid
+    expensive annotation expansion on variants that will be filtered out.
 
     Args:
-        df: Input DataFrame from bcftools
-        pedigree_df: Optional pedigree DataFrame with parent information
+        df: DataFrame with (null) column
 
     Returns:
-        Formatted DataFrame with expanded fields and melted samples
+        DataFrame with expanded annotation columns
     """
     # Find the (null) column
     if "(null)" not in df.columns:
-        raise ValueError("Column '(null)' not found in the input file")
+        # Already expanded or missing - return as-is
+        return df
 
-    # Get column index of (null)
-    null_col_idx = df.columns.index("(null)")
-
-    # Split columns into: before (null), (null), and after (null)
-    cols_after = df.columns[null_col_idx + 1 :]
-
-    # Step 1: Expand the (null) column
-    # Split by semicolon and create new columns
-
-    # First, we need to extract all unique field names from the (null) column
-    # to know what columns to create
+    # Extract all unique field names from the (null) column
     null_values = df.select("(null)").to_series()
     all_fields = set()
 
@@ -998,9 +1351,42 @@ def format_bcftools_tsv(
     if "CSQ" in df.columns:
         df = df.drop("CSQ")
 
-    # Step 2: Identify sample columns and extract sample names
-    # Sample columns have format "sample_name:..." in the header
-    # Skip the CSQ column as it should not be melted (handled above)
+    return df
+
+
+def format_bcftools_tsv_minimal(
+    df: pl.DataFrame, pedigree_df: Optional[pl.DataFrame] = None
+) -> pl.DataFrame:
+    """
+    Format a bcftools tabulated TSV with minimal processing.
+
+    This version SKIPS expanding the (null) annotation field and only:
+    - Melts sample columns into rows
+    - Extracts GT:DP:GQ:AD:VAF from sample values
+    - Optionally adds parent genotypes if pedigree provided
+
+    Use this for filtering workflows where you want to apply filters BEFORE
+    expensive annotation expansion. Call format_expand_annotations() afterwards
+    on filtered results.
+
+    Args:
+        df: Input DataFrame from bcftools
+        pedigree_df: Optional pedigree DataFrame with parent information
+
+    Returns:
+        Formatted DataFrame with melted samples (annotations still in (null) column)
+    """
+    # Find the (null) column
+    if "(null)" not in df.columns:
+        raise ValueError("Column '(null)' not found in the input file")
+
+    # Get column index of (null)
+    null_col_idx = df.columns.index("(null)")
+
+    # Split columns into: before (null), (null), and after (null)
+    cols_after = df.columns[null_col_idx + 1 :]
+
+    # Step 1: Identify sample columns (SKIP annotation expansion)
     sample_cols = []
     sample_names = []
 
@@ -1019,10 +1405,10 @@ def format_bcftools_tsv(
             sample_names.append(col)
 
     if not sample_cols:
-        # No sample columns to melt, just return expanded data
+        # No sample columns to melt
         return df
 
-    # Step 3: Melt the sample columns
+    # Step 2: Melt the sample columns
     # Keep all columns except sample columns as id_vars
     id_vars = [col for col in df.columns if col not in sample_cols]
 
@@ -1105,6 +1491,37 @@ def format_bcftools_tsv(
     return melted_df
 
 
+def format_bcftools_tsv(
+    df: pl.DataFrame, pedigree_df: Optional[pl.DataFrame] = None
+) -> pl.DataFrame:
+    """
+    Format a bcftools tabulated TSV DataFrame (full processing).
+
+    This is the complete formatting that:
+    1. Melts samples and extracts GT:DP:GQ:AD:VAF
+    2. Expands (null) annotation field into separate columns
+    3. Adds parent genotypes if pedigree provided
+
+    For DNM filtering workflows, consider using format_bcftools_tsv_minimal()
+    + apply_de_novo_filter() + format_expand_annotations() to avoid expanding
+    annotations on variants that will be filtered out.
+
+    Args:
+        df: Input DataFrame from bcftools
+        pedigree_df: Optional pedigree DataFrame with parent information
+
+    Returns:
+        Formatted DataFrame with expanded fields and melted samples
+    """
+    # First do minimal formatting (melt + sample columns)
+    melted_df = format_bcftools_tsv_minimal(df, pedigree_df)
+
+    # Then expand annotations
+    expanded_df = format_expand_annotations(melted_df)
+
+    return expanded_df
+
+
 def format_bcftools_tsv_lazy(
     lazy_df: pl.LazyFrame, pedigree_df: Optional[pl.DataFrame] = None
 ) -> pl.LazyFrame:
@@ -1120,10 +1537,455 @@ def format_bcftools_tsv_lazy(
     return formatted_df.lazy()
 
 
+# ------------------ Chunked two-pass processing with progress ------------------
+import io
+import math
+
+
+def _open_file_lines(path: Path):
+    """Yield header line and an iterator over the remaining lines (text)."""
+    if str(path).endswith(".gz"):
+        import gzip as _gzip
+
+        f = _gzip.open(path, "rt")
+    else:
+        f = open(path, "rt")
+
+    try:
+        header = f.readline()
+        for line in f:
+            yield header, line
+    finally:
+        f.close()
+
+
+def _line_iterator(path: Path, chunk_size: int = 50000):
+    """Yield (header, chunk_lines) tuples where chunk_lines is a list of lines."""
+    if str(path).endswith(".gz"):
+        import gzip as _gzip
+
+        f = _gzip.open(path, "rt")
+    else:
+        f = open(path, "rt")
+
+    try:
+        header = f.readline()
+        while True:
+            chunk = []
+            for _ in range(chunk_size):
+                line = f.readline()
+                if not line:
+                    break
+                chunk.append(line)
+            if not chunk:
+                break
+            yield header, chunk
+    finally:
+        f.close()
+
+
+def build_parent_lookup_from_file(
+    path: Path,
+    pedigree_df: Optional[pl.DataFrame] = None,
+    progress_bar=None,
+    verbose: bool = False,
+    chunk_size: int = 50000,
+):
+    """First pass: build a minimal parent lookup DataFrame with per-sample genotypes.
+
+    Returns a tuple (lookup_df, total_lines) where total_lines is the approximate number
+    of data lines processed (excluding header). If a `progress_bar` is provided it will
+    be updated as we process chunks.
+    """
+    parts = []
+
+    schema_overrides = {
+        col: pl.Utf8
+        for col in [
+            "FID",
+            "sample_id",
+            "father_id",
+            "mother_id",
+            "FatherBarcode",
+            "MotherBarcode",
+            "sample",
+        ]
+    }
+
+    processed = 0
+    chunk_idx = 0
+    for header, chunk in _line_iterator(path, chunk_size=chunk_size):
+        chunk_idx += 1
+        content = header + "".join(chunk)
+        try:
+            df_chunk = pl.read_csv(
+                io.StringIO(content), separator="\t", schema_overrides=schema_overrides
+            )
+        except Exception:
+            # Skip unparsable chunk
+            processed += len(chunk)
+            if progress_bar is not None:
+                progress_bar.update(len(chunk))
+            elif verbose and (chunk_idx % 10 == 0):
+                click.echo(
+                    f"Building lookup: processed ~{processed} lines...", err=True
+                )
+            continue
+
+        try:
+            # Use minimal format for lookup building (skip annotation expansion)
+            formatted = format_bcftools_tsv_minimal(df_chunk, pedigree_df=None)
+        except Exception:
+            # If chunk cannot be parsed into variants, skip
+            processed += len(chunk)
+            if progress_bar is not None:
+                progress_bar.update(len(chunk))
+            elif verbose and (chunk_idx % 10 == 0):
+                click.echo(
+                    f"Building lookup: processed ~{processed} lines...", err=True
+                )
+            continue
+
+        cols = [
+            "#CHROM",
+            "POS",
+            "REF",
+            "ALT",
+            "sample",
+            "sample_gt",
+            "sample_dp",
+            "sample_gq",
+            "sample_ad",
+            "sample_vaf",
+        ]
+        sel = [c for c in cols if c in formatted.columns]
+        # Optimization: Only store non-reference genotypes in lookup (skip 0/0)
+        part = formatted.select(sel).filter(pl.col("sample_gt") != "0/0").unique()
+        parts.append(part)
+
+        # Update progress
+        processed += len(chunk)
+        if progress_bar is not None:
+            progress_bar.update(len(chunk))
+        elif verbose and (chunk_idx % 10 == 0):
+            click.echo(f"Building lookup: processed ~{processed} lines...", err=True)
+
+    if parts:
+        lookup = pl.concat(parts).unique()
+    else:
+        lookup = pl.DataFrame([])
+
+    # processed currently counts number of data lines seen
+    return lookup, processed
+
+
+def add_parent_genotypes_from_lookup(
+    df: pl.DataFrame, parent_lookup: pl.DataFrame
+) -> pl.DataFrame:
+    """Join father/mother genotype info from the parent_lookup into df.
+
+    Assumes df has columns: #CHROM, POS, REF, ALT, father_id, mother_id
+    """
+    join_cols = [c for c in ["#CHROM", "POS", "REF", "ALT"] if c in df.columns]
+
+    if parent_lookup.is_empty():
+        # Create empty parent columns
+        return df
+
+    # Prepare father lookup
+    father_lookup = parent_lookup.rename(
+        {
+            "sample": "father",
+            "sample_gt": "father_gt",
+            "sample_dp": "father_dp",
+            "sample_gq": "father_gq",
+            "sample_ad": "father_ad",
+            "sample_vaf": "father_vaf",
+        }
+    )
+
+    # Left join on join_cols + ['father']
+    if "father_id" in df.columns:
+        df = df.join(
+            father_lookup,
+            left_on=join_cols + ["father_id"],
+            right_on=join_cols + ["father"],
+            how="left",
+        )
+    else:
+        # No father id, attempt join on 'father' column
+        df = df.join(
+            father_lookup,
+            on=join_cols + ["father"],
+            how="left",
+        )
+
+    # Prepare mother lookup
+    mother_lookup = parent_lookup.rename(
+        {
+            "sample": "mother",
+            "sample_gt": "mother_gt",
+            "sample_dp": "mother_dp",
+            "sample_gq": "mother_gq",
+            "sample_ad": "mother_ad",
+            "sample_vaf": "mother_vaf",
+        }
+    )
+
+    if "mother_id" in df.columns:
+        df = df.join(
+            mother_lookup,
+            left_on=join_cols + ["mother_id"],
+            right_on=join_cols + ["mother"],
+            how="left",
+        )
+    else:
+        df = df.join(
+            mother_lookup,
+            on=join_cols + ["mother"],
+            how="left",
+        )
+
+    # Normalize '.' to '0' for DP/GQ like previous function
+    df = df.with_columns(
+        [
+            pl.when(pl.col("father_dp") == ".")
+            .then(pl.lit("0"))
+            .otherwise(pl.col("father_dp"))
+            .alias("father_dp"),
+            pl.when(pl.col("father_gq") == ".")
+            .then(pl.lit("0"))
+            .otherwise(pl.col("father_gq"))
+            .alias("father_gq"),
+            pl.when(pl.col("mother_dp") == ".")
+            .then(pl.lit("0"))
+            .otherwise(pl.col("mother_dp"))
+            .alias("mother_dp"),
+            pl.when(pl.col("mother_gq") == ".")
+            .then(pl.lit("0"))
+            .otherwise(pl.col("mother_gq"))
+            .alias("mother_gq"),
+        ]
+    )
+
+    return df
+
+
+def process_with_progress(
+    input_path: Path,
+    output_prefix: str,
+    output_format: str,
+    pedigree_df: Optional[pl.DataFrame],
+    filter_config: Optional[dict],
+    verbose: bool,
+    chunk_size: int = 50000,
+):
+    """Process input in two passes and show a progress bar.
+
+    Pass 1: build parent lookup
+    Pass 2: process chunks, join parent genotypes, apply filters, and write incrementally
+    """
+    # tqdm optional
+    try:
+        from tqdm.auto import tqdm
+    except Exception:
+        tqdm = None
+
+    # Build parent lookup in a single pass (counts lines while building lookup)
+    if verbose:
+        click.echo("Pass 1: building parent genotype lookup (single pass)...", err=True)
+
+    pbar_lookup = None
+    if tqdm is not None:
+        # No known total yet; tqdm will show progress increasing
+        pbar_lookup = tqdm(desc="Building parent lookup", unit="lines")
+
+    parent_lookup, total_lines = build_parent_lookup_from_file(
+        input_path,
+        pedigree_df,
+        progress_bar=pbar_lookup,
+        verbose=verbose,
+        chunk_size=chunk_size,
+    )
+
+    if pbar_lookup is not None:
+        pbar_lookup.close()
+
+    if verbose:
+        click.echo(
+            f"Parent lookup contains {parent_lookup.shape[0]} genotype entries (from ~{total_lines} lines)",
+            err=True,
+        )
+
+    total_chunks = math.ceil(total_lines / chunk_size) if chunk_size > 0 else 1
+
+    # Prepare output paths
+    if output_format == "tsv":
+        out_path = Path(f"{output_prefix}.tsv")
+    elif output_format == "tsv.gz":
+        out_path = Path(f"{output_prefix}.tsv.gz")
+    else:
+        # We'll write parquet parts
+        out_path = Path(f"{output_prefix}")
+
+    first_write = True
+
+    # Iterate chunks and process
+    iterator = _line_iterator(input_path, chunk_size=chunk_size)
+    chunk_idx = 0
+
+    progress_bar = None
+    processed_lines = 0
+    if tqdm is not None:
+        progress_bar = tqdm(total=total_lines, desc="Processing variants")
+
+    for header, chunk in iterator:
+        chunk_idx += 1
+        chunk_count = len(chunk)
+
+        # Update progress at start of chunk to show we're working
+        if progress_bar is not None:
+            progress_bar.set_postfix_str(f"chunk {chunk_idx}")
+
+        content = header + "".join(chunk)
+        df_chunk = pl.read_csv(io.StringIO(content), separator="\t")
+
+        # Use MINIMAL format (skip annotation expansion for now)
+        try:
+            melted = format_bcftools_tsv_minimal(df_chunk, pedigree_df=None)
+        except Exception:
+            # If parse fails for chunk, skip
+            processed_lines += chunk_count
+            if progress_bar is not None:
+                progress_bar.update(chunk_count)
+            elif verbose and (chunk_idx % 10 == 0):
+                click.echo(
+                    f"Processed {processed_lines}/{total_lines} lines...", err=True
+                )
+            continue
+
+        # Optimization #1: Early GT filtering for DNM mode - skip reference-only variants
+        if filter_config and filter_config.get("dnm", {}).get("enabled", False):
+            melted = melted.filter(
+                pl.col("sample_gt").str.contains("1")
+                | pl.col("sample_gt").str.contains("2")
+            )
+            if melted.shape[0] == 0:
+                # All variants filtered out, skip to next chunk
+                processed_lines += chunk_count
+                if progress_bar is not None:
+                    progress_bar.update(chunk_count)
+                continue
+
+        # Attach parent ids from pedigree
+        if pedigree_df is not None and "sample" in melted.columns:
+            melted = melted.join(
+                pedigree_df, left_on="sample", right_on="sample_id", how="left"
+            )
+
+        # Add parent genotypes from global lookup
+        melted = add_parent_genotypes_from_lookup(melted, parent_lookup)
+
+        # Apply filters BEFORE expanding annotations (key optimization)
+        if filter_config and filter_config.get("dnm", {}).get("enabled", False):
+            cfg = {}
+            cfg.update(filter_config.get("quality", {}))
+            cfg.update(filter_config.get("dnm", {}))
+            filtered = apply_de_novo_filter(
+                melted, cfg, verbose=False, pedigree_df=pedigree_df
+            )
+        else:
+            # Apply standard quality filters
+            filtered = melted
+            quality_cfg = filter_config.get("quality", {}) if filter_config else {}
+            if quality_cfg:
+                filtered = apply_quality_filters(filtered, quality_cfg, verbose=False)
+
+            # Apply expression filter if present
+            expr = filter_config.get("expression") if filter_config else None
+            if expr:
+                try:
+                    expr_parsed = parse_impact_filter_expression(expr, filtered)
+                    filtered = filtered.filter(expr_parsed)
+                except Exception:
+                    # If expression parsing fails on a chunk, skip applying it
+                    pass
+
+        # NOW expand annotations only for variants that passed filters
+        if filtered.shape[0] > 0 and "(null)" in filtered.columns:
+            if progress_bar is not None:
+                progress_bar.set_postfix_str(f"expanding annotations chunk {chunk_idx}")
+            filtered = format_expand_annotations(filtered)
+
+        # Update progress after filtering (before write)
+        if progress_bar is not None:
+            progress_bar.set_postfix_str(f"writing chunk {chunk_idx}")
+
+        # Write filtered chunk to file (skip if empty)
+        if filtered.shape[0] > 0:
+            if output_format in ("tsv", "tsv.gz"):
+                csv_text = filtered.write_csv(separator="\t")
+                # First write includes header; subsequent writes skip header
+                if first_write:
+                    write_text = csv_text
+                    first_write = False
+                    if output_format == "tsv.gz":
+                        with gzip.open(out_path, "wt") as f:
+                            f.write(write_text)
+                    else:
+                        with open(out_path, "wt") as f:
+                            f.write(write_text)
+                else:
+                    # Skip header
+                    tail = "\n".join(csv_text.splitlines()[1:])
+                    if output_format == "tsv.gz":
+                        with gzip.open(out_path, "at") as f:
+                            f.write("\n" + tail)
+                    else:
+                        with open(out_path, "at") as f:
+                            f.write("\n" + tail)
+            else:
+                # Parquet: write part file
+                part_path = out_path.with_suffix(f".part{chunk_idx}.parquet")
+                filtered.write_parquet(part_path)
+
+        if progress_bar is not None:
+            progress_bar.update(chunk_count)
+            progress_bar.set_postfix_str("")  # Clear status
+        else:
+            processed_lines += chunk_count
+            if verbose and (chunk_idx % 10 == 0):
+                click.echo(
+                    f"Processed {processed_lines}/{total_lines} lines...", err=True
+                )
+
+    if progress_bar is not None:
+        progress_bar.close()
+
+    if verbose:
+        click.echo("Processing complete.", err=True)
+
+
 def apply_filters_lazy(
-    lazy_df: pl.LazyFrame, filter_config: dict, verbose: bool = False
+    lazy_df: pl.LazyFrame,
+    filter_config: dict,
+    verbose: bool = False,
+    pedigree_df: Optional[pl.DataFrame] = None,
 ) -> pl.LazyFrame:
     """Apply quality and expression filters using lazy operations."""
+    # If DNM mode is enabled, we need to collect and apply DNM logic
+    if filter_config.get("dnm", {}).get("enabled", False):
+        dnm_cfg = {}
+        dnm_cfg.update(filter_config.get("quality", {}))
+        dnm_cfg.update(filter_config.get("dnm", {}))
+
+        # Collect minimally and apply DNM filter eagerly, then return lazy frame
+        df = lazy_df.collect(streaming=True)
+        filtered_df = apply_de_novo_filter(
+            df, dnm_cfg, verbose, pedigree_df=pedigree_df
+        )
+        return filtered_df.lazy()
+
     quality_config = filter_config.get("quality", {})
     expression = filter_config.get("expression")
 

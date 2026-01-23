@@ -1,0 +1,159 @@
+# ============================================================================
+# PyWombat Configuration: De Novo Mutation (DNM) Detection
+# ============================================================================
+#
+# This configuration identifies de novo mutations in trio/family data by:
+#   - Requiring the variant in the proband (child)
+#   - Confirming absence in both parents (with appropriate VAF thresholds)
+#   - Accounting for sex chromosomes (X/Y) and pseudo-autosomal regions (PAR)
+#   - Applying stringent quality filters and frequency thresholds
+#
+# IMPORTANT: Requires pedigree file with --pedigree option
+#
+# Usage:
+#   uvx pywombat input.tsv --pedigree pedigree.tsv \
+#     -F examples/de_novo_mutations.yml -o output
+#
+# Pedigree format (TSV):
+#   FID  sample_id  FatherBarcode  MotherBarcode  Sex  Pheno
+#   FAM1 Child1     Father1        Mother1        1    2
+#   FAM1 Father1    0              0              1    1
+#   FAM1 Mother1    0              0              2    1
+#
+# Sex codes: 1=male, 2=female, M=male, F=female
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Quality Filters (Applied to Proband)
+# ----------------------------------------------------------------------------
+
+quality:
+  # Minimum read depth for the proband sample
+  sample_dp_min: 10
+
+  # Minimum genotype quality score for the proband
+  sample_gq_min: 18
+
+  # Base VAF threshold for heterozygous de novo variants
+  # Note: Homozygous and hemizygous variants use higher threshold (see dnm section)
+  sample_vaf_min: 0.20
+
+# ----------------------------------------------------------------------------
+# De Novo Mutation (DNM) Detection Settings
+# ----------------------------------------------------------------------------
+
+dnm:
+  # Enable de novo detection mode
+  # When true, applies specialized logic for identifying DNMs
+  enabled: true
+
+  # --- Parent Quality Thresholds ---
+  # Both parents must meet these criteria to be considered "informative"
+
+  parent_dp_min: 10 # Minimum read depth for each parent
+  parent_gq_min: 18 # Minimum genotype quality for each parent
+  parent_vaf_max: 0.02 # Maximum VAF in parents (2% allows for sequencing noise)
+
+  # --- Special VAF Thresholds ---
+
+  # Hemizygous variants require higher VAF (near 100%)
+  # Applies to:
+  #   - X chromosome in males (outside PAR regions)
+  #   - Y chromosome in males
+  # Also applies to homozygous variants (1/1) in diploid regions
+  sample_vaf_hemizygous_min: 0.85
+
+  # --- Population Frequency Filters ---
+
+  # Maximum allele frequency in gnomAD genomes
+  # Filters out common variants that are unlikely to be pathogenic de novos
+  fafmax_faf95_max_genomes_max: 0.001 # 0.1% maximum frequency
+
+  # Only keep variants that pass gnomAD quality filters
+  # Filters out variants flagged in gnomAD (genomes_filters = '.' means PASS)
+  genomes_filters_pass_only: true
+
+  # --- Pseudo-Autosomal Region (PAR) Coordinates ---
+
+  # PAR regions are treated as autosomal (require both parents to be reference)
+  # Coordinates below are for GRCh38/hg38 assembly
+  # Update these if using a different reference genome
+
+  par_regions:
+    grch38:
+      PAR1:
+        chrom: X
+        start: 10000
+        end: 2781479
+      PAR2:
+        chrom: X
+        start: 155701383
+        end: 156030895
+
+  # For GRCh37/hg19, use these coordinates instead:
+  # grch37:
+  #   PAR1:
+  #     chrom: X
+  #     start: 60001
+  #     end: 2699520
+  #   PAR2:
+  #     chrom: X
+  #     start: 154931044
+  #     end: 155260560
+# ----------------------------------------------------------------------------
+# De Novo Detection Logic
+# ----------------------------------------------------------------------------
+#
+# The DNM filter applies chromosome-aware inheritance checks:
+#
+# Autosomes & PAR regions:
+#   - Proband: heterozygous or homozygous for alternate allele
+#   - Father: homozygous reference (0/0) with VAF < 2%
+#   - Mother: homozygous reference (0/0) with VAF < 2%
+#
+# X chromosome in males (outside PAR):
+#   - Proband: hemizygous (single copy, VAF ≥ 85%)
+#   - Father: not informative (doesn't transmit X to son)
+#   - Mother: homozygous reference (0/0) with VAF < 2%
+#
+# Y chromosome in males:
+#   - Proband: hemizygous (single copy, VAF ≥ 85%)
+#   - Father: homozygous reference (0/0) with VAF < 2%
+#   - Mother: not applicable (no Y chromosome)
+#
+# X chromosome in females:
+#   - Proband: heterozygous or homozygous for alternate allele
+#   - Father: homozygous reference (0/0) with VAF < 2%
+#   - Mother: homozygous reference (0/0) with VAF < 2%
+#
+# ----------------------------------------------------------------------------
+# Notes
+# ----------------------------------------------------------------------------
+#
+# Genotype Quality:
+#   - All genotypes must be fully called (no './.' or '0/.' partial calls)
+#   - This ensures high confidence in inheritance patterns
+#
+# VAF Thresholds:
+#   - Parent VAF < 2%: allows for low-level sequencing noise/contamination
+#   - Proband het VAF > 20%: ensures sufficient alternate allele support
+#   - Proband hom/hemizygous VAF ≥ 85%: confirms true hom/hemizygous calls
+#
+# Sex Chromosome Handling:
+#   - Chromosome names are normalized (both 'X' and 'chrX' work)
+#   - PAR regions are treated like autosomes (biparental inheritance)
+#   - Sex information from pedigree determines inheritance rules
+#
+# Recommended Quality Control:
+#   - Review variants in known de novo hotspots
+#   - Check for parental mosaicism in suspicious cases
+#   - Validate high-impact DNMs with Sanger sequencing
+#   - Consider segregation in additional family members if available
+#
+# Adjusting Stringency:
+#   - More lenient: parent_vaf_max: 0.05 (allow up to 5% in parents)
+#   - More strict: parent_vaf_max: 0.01 (require < 1% in parents)
+#   - Higher coverage needs: increase sample_dp_min and parent_dp_min
+#   - Lower coverage data: decrease depth thresholds (not recommended < 8)
+#
+# ============================================================================

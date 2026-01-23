@@ -1,0 +1,84 @@
+# ============================================================================
+# PyWombat Configuration: Rare Variants with High Impact
+# ============================================================================
+#
+# This configuration filters for ultra-rare, high-impact variants typically
+# used in rare disease studies. It applies stringent quality filters and
+# focuses on variants with:
+#   - High functional impact (VEP: HIGH)
+#   - Loss-of-function (LoF) annotation with high confidence
+#   - Ultra-rare frequency (≤0.1% in gnomAD genomes)
+#   - High genotype quality (GQ ≥ 19, DP ≥ 10)
+#   - Appropriate VAF thresholds for het/hom variants
+#
+# Usage:
+#   uvx pywombat input.tsv -F examples/rare_variants_high_impact.yml -o output
+#
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Quality Filters
+# ----------------------------------------------------------------------------
+# Apply strict quality thresholds to ensure high-confidence variant calls
+
+quality:
+  # Minimum read depth for the sample
+  sample_dp_min: 10
+
+  # Minimum genotype quality score
+  sample_gq_min: 19
+
+  # Variant allele frequency (VAF) filters for heterozygous variants (0/1, 1/0)
+  # These ensure proper allelic balance for het calls
+  sample_vaf_het_min: 0.25 # At least 25% of reads support alternate allele
+  sample_vaf_het_max: 0.75 # At most 75% to avoid hom calls misclassified as het
+
+  # VAF filter for homozygous alternate variants (1/1)
+  # High threshold ensures true homozygous calls
+  sample_vaf_homalt_min: 0.85 # At least 85% of reads support alternate allele
+
+  # VAF filter for homozygous reference / wild type (0/0)
+  # Low threshold ensures true reference calls (if included in analysis)
+  sample_vaf_hom_ref_max: 0.15 # At most 15% of reads support alternate allele
+
+  # Apply the same quality filters to parent genotypes (if pedigree provided)
+  # This ensures high-quality trio/family data for inheritance analysis
+  apply_to_parents: true
+
+  # Filter out variants where sample doesn't carry the alternate allele
+  # Excludes 0/0 (homozygous reference) and ./. (missing) genotypes
+  filter_no_alt_allele: true
+
+# ----------------------------------------------------------------------------
+# Expression Filter
+# ----------------------------------------------------------------------------
+# Combines functional impact and population frequency criteria
+#
+# Filter breakdown:
+#   - VEP_CANONICAL = YES:        Only canonical transcripts
+#   - VEP_IMPACT = HIGH:          High impact variants (stop-gain, frameshift, etc.)
+#   - VEP_LoF = HC:               Loss-of-function, high confidence
+#   - VEP_LoF_flags = .:          No flags (clean LoF prediction)
+#   - fafmax_faf95_max_genomes:   Allele frequency ≤ 0.001 (0.1%) or absent
+#
+# The fafmax_faf95_max represents the filtering allele frequency (95% confidence)
+# from gnomAD genomes, which is more stringent than raw allele counts.
+
+expression: "VEP_CANONICAL = YES & VEP_IMPACT = HIGH & VEP_LoF = HC & VEP_LoF_flags = . & ( fafmax_faf95_max_genomes = null | fafmax_faf95_max_genomes <= 0.001 )"
+# ----------------------------------------------------------------------------
+# Notes
+# ----------------------------------------------------------------------------
+#
+# Expected columns from VEP annotation:
+#   - VEP_CANONICAL: Whether transcript is canonical
+#   - VEP_IMPACT: Predicted impact (MODIFIER, LOW, MODERATE, HIGH)
+#   - VEP_LoF: Loss-of-function annotation
+#   - VEP_LoF_flags: Flags indicating potential LoF artifacts
+#   - fafmax_faf95_max_genomes: gnomAD v4 filtering allele frequency
+#
+# Adjust thresholds based on your specific needs:
+#   - For more variants: increase fafmax threshold to 0.01 (1%)
+#   - For stricter calls: increase sample_vaf_homalt_min to 0.90
+#   - For lower coverage data: decrease sample_dp_min to 8
+#
+# ============================================================================
