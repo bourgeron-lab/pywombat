@@ -5,6 +5,16 @@ All notable changes to PyWombat will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-01-24
+
+### Added
+
+- **Boolean Flag Support in INFO Fields**: INFO field entries without `=` signs (e.g., `PASS`, `DB`, `SOMATIC`) are now extracted as boolean columns with `True`/`False` values instead of being ignored. This enables filtering on VCF flag fields.
+
+### Fixed
+
+- INFO field parsing now handles all field types correctly, including standalone boolean flags commonly used in VCF files.
+
 ## [1.0.0] - 2026-01-23
 
 First stable release of PyWombat! 🎉

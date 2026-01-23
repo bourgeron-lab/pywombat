@@ -13,6 +13,7 @@ A high-performance CLI tool for processing and filtering bcftools tabulated TSV 
 🧬 **De Novo Detection**: Sex-chromosome-aware DNM identification  
 📊 **Flexible Output**: TSV, compressed TSV, or Parquet formats  
 🎯 **Expression Filters**: Complex filtering with logical expressions  
+🏷️ **Boolean Flag Support**: INFO field flags (PASS, DB, etc.) extracted as True/False columns  
 ⚡ **Streaming Mode**: Memory-efficient processing of large files
 
 ---
@@ -55,7 +56,7 @@ uv run wombat input.tsv -o output
 
 PyWombat transforms bcftools tabulated TSV files into analysis-ready formats by:
 
-1. **Expanding the `(null)` INFO column**: Extracts all `NAME=value` fields (e.g., `DP=30;AF=0.5;AC=2`) into separate columns
+1. **Expanding the `(null)` INFO column**: Extracts all `NAME=value` fields (e.g., `DP=30;AF=0.5;AC=2`) and boolean flags (e.g., `PASS`, `DB`) into separate columns
 2. **Melting sample columns**: Converts wide-format sample data into long format with one row per variant-sample combination
 3. **Extracting genotype data**: Parses `GT:DP:GQ:AD` format into separate columns with calculated VAF
 4. **Adding parent data**: Joins father/mother genotypes when pedigree is provided
@@ -66,20 +67,22 @@ PyWombat transforms bcftools tabulated TSV files into analysis-ready formats by:
 **Input (Wide Format):**
 
 ```tsv
-#CHROM  POS  REF  ALT  (null)              Sample1:GT:DP:GQ:AD  Sample2:GT:DP:GQ:AD
-chr1    100  A    T    DP=30;AF=0.5;AC=2   0/1:15:99:5,10      1/1:18:99:0,18
+#CHROM  POS  REF  ALT  (null)                      Sample1:GT:DP:GQ:AD  Sample2:GT:DP:GQ:AD
+chr1    100  A    T    DP=30;AF=0.5;PASS;AC=2      0/1:15:99:5,10      1/1:18:99:0,18
 ```
 
 **Output (Long Format):**
 
 ```tsv
-#CHROM  POS  REF  ALT  AC  AF   DP  sample   sample_gt  sample_dp  sample_gq  sample_ad  sample_vaf
-chr1    100  A    T    2   0.5  30  Sample1  0/1        15         99         10         0.6667
-chr1    100  A    T    2   0.5  30  Sample2  1/1        18         99         18         1.0
+#CHROM  POS  REF  ALT  AC  AF   DP  PASS  sample   sample_gt  sample_dp  sample_gq  sample_ad  sample_vaf
+chr1    100  A    T    2   0.5  30  true  Sample1  0/1        15         99         10         0.6667
+chr1    100  A    T    2   0.5  30  true  Sample2  1/1        18         99         18         1.0
 ```
 
 **Generated Columns:**
 
+- INFO fields with `=`: Extracted as separate columns (e.g., `DP`, `AF`, `AC`)
+- INFO boolean flags: Extracted as True/False columns (e.g., `PASS`, `DB`, `SOMATIC`)
 - `sample`: Sample identifier
 - `sample_gt`: Genotype (e.g., 0/1, 1/1)
 - `sample_dp`: Read depth (total coverage)

@@ -1313,6 +1313,10 @@ def format_expand_annotations(df: pl.DataFrame) -> pl.DataFrame:
     This is a separate step that can be applied after filtering to avoid
     expensive annotation expansion on variants that will be filtered out.
 
+    Handles two types of INFO fields:
+    - Key-value pairs (e.g., "DP=30") -> extracted as string values
+    - Boolean flags (e.g., "PASS", "DB") -> created as True/False columns
+
     Args:
         df: DataFrame with (null) column
 
@@ -1324,9 +1328,10 @@ def format_expand_annotations(df: pl.DataFrame) -> pl.DataFrame:
         # Already expanded or missing - return as-is
         return df
 
-    # Extract all unique field names from the (null) column
+    # Extract all unique field names and flags from the (null) column
     null_values = df.select("(null)").to_series()
     all_fields = set()
+    all_flags = set()
 
     for value in null_values:
         if value and not (isinstance(value, float)):  # Skip null/NaN values
@@ -1335,13 +1340,23 @@ def format_expand_annotations(df: pl.DataFrame) -> pl.DataFrame:
                 if "=" in pair:
                     field_name = pair.split("=", 1)[0]
                     all_fields.add(field_name)
+                elif pair.strip():  # Boolean flag (no '=')
+                    all_flags.add(pair.strip())
 
-    # Create expressions to extract each field
+    # Create expressions to extract each key-value field
     for field in sorted(all_fields):
         # Extract the field value from the (null) column
         # Pattern: extract value after "field=" and before ";" or end of string
         df = df.with_columns(
             pl.col("(null)").str.extract(f"{field}=([^;]+)").alias(field)
+        )
+
+    # Create boolean columns for flags
+    for flag in sorted(all_flags):
+        # Check if flag appears in the (null) column (as whole word)
+        # Use regex to match flag as a separate field (not part of another field name)
+        df = df.with_columns(
+            pl.col("(null)").str.contains(f"(^|;){flag}(;|$)").alias(flag)
         )
 
     # Drop the original (null) column
