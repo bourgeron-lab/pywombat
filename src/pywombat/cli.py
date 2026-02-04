@@ -1198,15 +1198,18 @@ def read_pedigree(pedigree_path: Path) -> pl.DataFrame:
     pedigree_df = df.select(select_cols)
 
     # Replace 0 and -9 with null (indicating no parent)
+    # Explicit cast to Utf8 ensures type is preserved even when all values become null
     pedigree_df = pedigree_df.with_columns(
         [
             pl.when(pl.col("father_id").cast(pl.Utf8).is_in(["0", "-9"]))
             .then(None)
             .otherwise(pl.col("father_id"))
+            .cast(pl.Utf8)
             .alias("father_id"),
             pl.when(pl.col("mother_id").cast(pl.Utf8).is_in(["0", "-9"]))
             .then(None)
             .otherwise(pl.col("mother_id"))
+            .cast(pl.Utf8)
             .alias("mother_id"),
         ]
     )
