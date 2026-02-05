@@ -7,14 +7,15 @@ A high-performance CLI tool for processing and filtering bcftools tabulated TSV 
 
 ## Features
 
-✨ **Fast Processing**: Uses Polars for efficient data handling  
-🔬 **Quality Filtering**: Configurable depth, quality, and VAF thresholds  
-👨‍👩‍👧 **Pedigree Support**: Trio and family analysis with parent genotypes  
-🧬 **De Novo Detection**: Sex-chromosome-aware DNM identification  
-📊 **Flexible Output**: TSV, compressed TSV, or Parquet formats  
-🎯 **Expression Filters**: Complex filtering with logical expressions  
-🏷️ **Boolean Flag Support**: INFO field flags (PASS, DB, etc.) extracted as True/False columns  
-⚡ **Streaming Mode**: Memory-efficient processing of large files
+✨ **Fast Processing**: Uses Polars for efficient data handling
+🔬 **Quality Filtering**: Configurable depth, quality, and VAF thresholds
+👨‍👩‍👧 **Pedigree Support**: Trio and family analysis with parent genotypes
+🧬 **De Novo Detection**: Sex-chromosome-aware DNM identification
+📊 **Flexible Output**: TSV, compressed TSV, or Parquet formats
+🎯 **Expression Filters**: Complex filtering with logical expressions
+🏷️ **Boolean Flag Support**: INFO field flags (PASS, DB, etc.) extracted as True/False columns
+⚡ **Memory Optimized**: Two-step workflow for large files (prepare → filter)
+💾 **Parquet Support**: Pre-process large files for repeated, memory-efficient analysis
 
 ---
 
@@ -25,16 +26,36 @@ A high-performance CLI tool for processing and filtering bcftools tabulated TSV 
 Use `uvx` to run PyWombat without installation:
 
 ```bash
-# Basic formatting
-uvx pywombat input.tsv -o output
+# Basic filtering
+uvx pywombat filter input.tsv -o output
 
-# With filtering
-uvx pywombat input.tsv -F examples/rare_variants_high_impact.yml -o output
+# With filter configuration
+uvx pywombat filter input.tsv -F examples/rare_variants_high_impact.yml -o output
 
 # De novo mutation detection
-uvx pywombat input.tsv --pedigree pedigree.tsv \
+uvx pywombat filter input.tsv --pedigree pedigree.tsv \
   -F examples/de_novo_mutations.yml -o denovo
 ```
+
+### For Large Files (>1GB or >50 samples)
+
+Use the two-step workflow for memory-efficient processing:
+
+```bash
+# Step 1: Prepare (one-time preprocessing)
+uvx pywombat prepare input.tsv.gz -o prepared.parquet
+
+# Step 2: Filter (fast, memory-efficient, can be run multiple times)
+uvx pywombat filter prepared.parquet \
+  -p pedigree.tsv \
+  -F config.yml \
+  -o filtered
+```
+
+**Benefits:**
+- Pre-expands INFO fields once (saves time on repeated filtering)
+- Applies filters before melting samples (reduces memory by 95%+)
+- Parquet format enables fast columnar access
 
 ### Installation for Development/Repeated Use
 
@@ -47,7 +68,7 @@ cd pywombat
 uv sync
 
 # Run with uv run
-uv run wombat input.tsv -o output
+uv run wombat filter input.tsv -o output
 ```
 
 ---
@@ -92,25 +113,62 @@ chr1    100  A    T    2   0.5  30  true  Sample2  1/1        18         99     
 
 ---
 
-## Basic Usage
+## Commands
 
-### Format Without Filtering
+PyWombat has two main commands:
+
+### `wombat prepare` - Preprocess Large Files
+
+Converts TSV/TSV.gz to optimized Parquet format with pre-expanded INFO fields:
 
 ```bash
-# Output to file
-uvx pywombat input.tsv -o output
-
-# Output to stdout (useful for piping)
-uvx pywombat input.tsv
-
-# Compressed output
-uvx pywombat input.tsv -o output -f tsv.gz
-
-# Parquet format (fastest for large files)
-uvx pywombat input.tsv -o output -f parquet
+# Basic usage
+wombat prepare input.tsv.gz -o prepared.parquet
 
 # With verbose output
-uvx pywombat input.tsv -o output --verbose
+wombat prepare input.tsv.gz -o prepared.parquet -v
+
+# Adjust chunk size for memory constraints
+wombat prepare input.tsv.gz -o prepared.parquet --chunk-size 25000
+```
+
+**What it does:**
+- Extracts all INFO fields (VEP_*, AF, etc.) as separate columns
+- Keeps samples in wide format (not melted yet)
+- Writes memory-efficient Parquet format
+- Processes in chunks to handle files of any size
+
+**When to use:**
+- Files >1GB or >50 samples
+- Large families (>10 members)
+- Running multiple filter configurations
+- Repeated analysis of the same dataset
+
+### `wombat filter` - Process and Filter Data
+
+Transforms and filters variant data (works with both TSV and Parquet input):
+
+```bash
+# Basic filtering (TSV input)
+wombat filter input.tsv -o output
+
+# From prepared Parquet (faster, more memory-efficient)
+wombat filter prepared.parquet -o output
+
+# With filter configuration
+wombat filter input.tsv -F config.yml -o output
+
+# With pedigree
+wombat filter input.tsv -p pedigree.tsv -o output
+
+# Compressed output
+wombat filter input.tsv -o output -f tsv.gz
+
+# Parquet output
+wombat filter input.tsv -o output -f parquet
+
+# With verbose output
+wombat filter input.tsv -o output -v
 ```
 
 ### With Pedigree (Trio/Family Analysis)
@@ -118,7 +176,7 @@ uvx pywombat input.tsv -o output --verbose
 Add parent genotype information for inheritance analysis:
 
 ```bash
-uvx pywombat input.tsv --pedigree pedigree.tsv -o output
+wombat filter input.tsv --pedigree pedigree.tsv -o output
 ```
 
 **Pedigree File Format** (tab-separated):
@@ -156,7 +214,7 @@ PyWombat supports two types of filtering:
 Filter for ultra-rare, high-impact variants:
 
 ```bash
-uvx pywombat input.tsv \
+wombat filter input.tsv \
   -F examples/rare_variants_high_impact.yml \
   -o rare_variants
 ```
@@ -188,7 +246,7 @@ expression: "VEP_CANONICAL = YES & VEP_IMPACT = HIGH & VEP_LoF = HC & VEP_LoF_fl
 Identify de novo mutations in trio data:
 
 ```bash
-uvx pywombat input.tsv \
+wombat filter input.tsv \
   --pedigree pedigree.tsv \
   -F examples/de_novo_mutations.yml \
   -o denovo
@@ -268,7 +326,7 @@ expression: "VEP_IMPACT = HIGH & VEP_CANONICAL = YES & gnomad_AF < 0.01 & CADD_P
 Inspect specific variants for troubleshooting:
 
 ```bash
-uvx pywombat input.tsv \
+wombat filter input.tsv \
   -F config.yml \
   --debug chr11:70486013
 ```
@@ -287,20 +345,20 @@ Shows:
 ### TSV (Default)
 
 ```bash
-uvx pywombat input.tsv -o output          # Creates output.tsv
-uvx pywombat input.tsv -o output -f tsv   # Same as above
+wombat filter input.tsv -o output          # Creates output.tsv
+wombat filter input.tsv -o output -f tsv   # Same as above
 ```
 
 ### Compressed TSV
 
 ```bash
-uvx pywombat input.tsv -o output -f tsv.gz  # Creates output.tsv.gz
+wombat filter input.tsv -o output -f tsv.gz  # Creates output.tsv.gz
 ```
 
 ### Parquet (Fastest for Large Files)
 
 ```bash
-uvx pywombat input.tsv -o output -f parquet  # Creates output.parquet
+wombat filter input.tsv -o output -f parquet  # Creates output.parquet
 ```
 
 **When to use Parquet:**
@@ -318,7 +376,7 @@ uvx pywombat input.tsv -o output -f parquet  # Creates output.parquet
 
 ```bash
 # Step 1: Filter for rare, high-impact variants
-uvx pywombat cohort.tsv \
+wombat filter cohort.tsv \
   -F examples/rare_variants_high_impact.yml \
   -o rare_variants
 
@@ -330,24 +388,34 @@ uvx pywombat cohort.tsv \
 
 ```bash
 # Identify de novo mutations in autism cohort
-uvx pywombat autism_trios.tsv \
+wombat filter autism_trios.tsv \
   --pedigree autism_pedigree.tsv \
   -F examples/de_novo_mutations.yml \
   -o autism_denovo \
-  --verbose
+  -v
 
 # Review output for genes in autism risk lists
 ```
 
-### 3. Multi-Family Rare Variant Analysis
+### 3. Large Multi-Family Analysis (Memory-Optimized)
 
 ```bash
-# Process multiple families together
-uvx pywombat families.tsv \
+# Step 1: Prepare once (preprocesses INFO fields)
+wombat prepare large_cohort.tsv.gz -o prepared.parquet -v
+
+# Step 2: Filter with different configurations (fast, memory-efficient)
+wombat filter prepared.parquet \
   --pedigree families_pedigree.tsv \
   -F examples/rare_variants_high_impact.yml \
   -o families_rare_variants \
-  -f parquet  # Parquet for fast downstream analysis
+  -v
+
+# Step 3: Run additional filters without re-preparing
+wombat filter prepared.parquet \
+  --pedigree families_pedigree.tsv \
+  -F examples/de_novo_mutations.yml \
+  -o families_denovo \
+  -v
 ```
 
 ### 4. Custom Expression Filter
@@ -367,7 +435,7 @@ expression: "VEP_IMPACT = HIGH & (gnomad_AF < 0.0001 | gnomad_AF = null)"
 Apply:
 
 ```bash
-uvx pywombat input.tsv -F custom_filter.yml -o output
+wombat filter input.tsv -F custom_filter.yml -o output
 ```
 
 ---
@@ -442,7 +510,7 @@ bcftools query -HH \
   annotated.split.bcf > annotated.tsv
 
 # 4. Process with PyWombat
-uvx pywombat annotated.tsv -F examples/rare_variants_high_impact.yml -o output
+wombat filter annotated.tsv -F examples/rare_variants_high_impact.yml -o output
 ```
 
 **Why split-vep is required:**
@@ -459,7 +527,7 @@ For production workflows, these commands can be piped together:
 # Efficient pipeline (single pass through data)
 bcftools +split-vep -c - -p VEP_ input.vcf.gz | \
   bcftools query -HH -f '%CHROM\t%POS\t%REF\t%ALT\t%FILTER\t%INFO[\t%GT:%DP:%GQ:%AD]\n' | \
-  uvx pywombat - -F config.yml -o output
+  wombat filter - -F config.yml -o output
 ```
 
 **Note**: For multiple filter configurations, it's more efficient to save the intermediate TSV file rather than regenerating it each time.
@@ -495,11 +563,31 @@ Each configuration file is fully documented with:
 
 ## Performance Tips
 
-1. **Use streaming mode** (default): Efficient for most workflows
-2. **Parquet output**: Faster for large files and repeated analysis
+### For Large Files (>1GB or >50 samples)
+
+1. **Use the two-step workflow**: `wombat prepare` → `wombat filter`
+   - Reduces memory usage by 95%+ (4.2M variants → ~100 after early filtering)
+   - Pre-expands INFO fields once, reuse for multiple filter configurations
+   - Example: 38-sample family with 4.2M variants processes in <1 second with ~1.2GB RAM
+
+2. **Parquet format benefits**:
+   - Columnar storage enables selective column loading
+   - Pre-filtering before melting (expression filters applied before expanding to per-sample rows)
+   - 30% smaller file size vs gzipped TSV
+
+### For All Files
+
 3. **Pre-filter with bcftools**: Filter by region/gene before PyWombat
 4. **Compressed input**: PyWombat handles `.gz` files natively
-5. **Filter early**: Apply quality filters before complex expression filters
+5. **Use verbose mode** (`-v`): Monitor progress and filtering statistics
+
+### Memory Comparison
+
+| Approach | 38 samples, 4.2M variants | Memory | Time |
+|----------|---------------------------|--------|------|
+| Direct TSV | ❌ OOM (>200GB) | 200+ GB | Failed |
+| TSV with chunking | ⚠️ Slow | ~30GB | ~3 min |
+| **Parquet + pre-filter** | ✅ **Optimal** | **~1.2GB** | **<1 sec** |
 
 ---
 
@@ -566,11 +654,15 @@ pywombat/
 
 **Issue**: Memory errors on large files
 
-- **Solution**: Files are processed in streaming mode by default; if issues persist, pre-filter with bcftools
+- **Solution**: Use the two-step workflow: `wombat prepare` then `wombat filter` for 95%+ memory reduction
+
+**Issue**: Command not found after upgrading
+
+- **Solution**: PyWombat now uses subcommands - use `wombat filter` instead of just `wombat`
 
 ### Getting Help
 
-1. Check `--help` for command options: `uvx pywombat --help`
+1. Check `--help` for command options: `wombat --help` or `wombat filter --help`
 2. Review example configurations in [`examples/`](examples/)
 3. Use `--debug` mode to inspect specific variants
 4. Use `--verbose` to see filtering steps

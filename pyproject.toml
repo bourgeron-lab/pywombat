@@ -1,6 +1,6 @@
 [project]
 name = "pywombat"
-version = "1.0.2"
+version = "1.1.0"
 description = "A CLI tool for processing and filtering bcftools tabulated TSV files with pedigree support"
 readme = "README.md"
 authors = [{ name = "Freddy Cliquet", email = "fcliquet@pasteur.fr" }]
@@ -21,9 +21,17 @@ Homepage = "https://github.com/bourgeron-lab/pywombat"
 Repository = "https://github.com/bourgeron-lab/pywombat"
 Issues = "https://github.com/bourgeron-lab/pywombat/issues"
 
+[project.optional-dependencies]
+dev = ["pytest>=7.0.0", "pytest-cov>=4.0.0"]
+
 [project.scripts]
 wombat = "pywombat.cli:cli"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]

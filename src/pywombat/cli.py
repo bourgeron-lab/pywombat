@@ -11,13 +11,266 @@ import polars as pl
 import yaml
 
 
-@click.command()
+@click.group()
+def cli():
+    """
+    Wombat: A tool for processing bcftools tabulated TSV files.
+
+    \b
+    Commands:
+        filter   Process and filter variant data
+        prepare  Convert TSV to optimized Parquet format
+    """
+    pass
+
+
+@cli.command("prepare")
+@click.argument("input_file", type=click.Path(exists=True, path_type=Path))
+@click.option(
+    "-o",
+    "--output",
+    type=click.Path(path_type=Path),
+    required=True,
+    help="Output Parquet file path.",
+)
+@click.option(
+    "--chunk-size",
+    type=int,
+    default=50000,
+    help="Number of rows to process at a time (default: 50000).",
+)
+@click.option("-v", "--verbose", is_flag=True, help="Enable verbose output.")
+def prepare_cmd(
+    input_file: Path,
+    output: Path,
+    chunk_size: int,
+    verbose: bool,
+):
+    """
+    Convert bcftools TSV to optimized Parquet format.
+
+    This command pre-processes a TSV file by:
+
+    \b
+    1. Extracting all INFO fields from the '(null)' column into separate columns
+    2. Applying memory-efficient data types (Categorical for CHROM, UInt32 for POS)
+    3. Writing to Parquet format for efficient columnar access
+
+    The output Parquet file can then be used with 'wombat filter' for much faster
+    and more memory-efficient filtering, especially for large files.
+
+    \b
+    Examples:
+        wombat prepare input.tsv.gz -o prepared.parquet
+        wombat prepare input.tsv.gz -o prepared.parquet --chunk-size 100000
+    """
+    try:
+        if verbose:
+            click.echo(f"Preparing {input_file} -> {output}", err=True)
+
+        # Ensure output has .parquet extension
+        if not str(output).endswith(".parquet"):
+            output = Path(f"{output}.parquet")
+
+        # Process the file
+        prepare_parquet(input_file, output, chunk_size, verbose)
+
+        if verbose:
+            click.echo(f"Successfully created {output}", err=True)
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        raise click.Abort()
+
+
+def prepare_parquet(
+    input_file: Path,
+    output: Path,
+    chunk_size: int = 50000,
+    verbose: bool = False,
+) -> None:
+    """
+    Convert a bcftools TSV file to Parquet with pre-expanded INFO fields.
+
+    Processes the file in chunks to handle large files without running out of memory.
+
+    Args:
+        input_file: Path to input TSV or TSV.gz file
+        output: Path to output Parquet file
+        chunk_size: Number of rows to process per chunk
+        verbose: Whether to print progress
+    """
+    from tqdm import tqdm
+
+    # First pass: discover all INFO fields
+    if verbose:
+        click.echo("Pass 1: Discovering INFO fields...", err=True)
+
+    all_fields = set()
+    all_flags = set()
+    total_lines = 0
+
+    is_gzipped = str(input_file).endswith(".gz")
+    opener = gzip.open if is_gzipped else open
+
+    with opener(input_file, "rt") as f:
+        header_line = f.readline().strip()
+        header_cols = header_line.split("\t")
+
+        # Find the (null) column index dynamically
+        null_col_idx = None
+        for i, col in enumerate(header_cols):
+            if col == "(null)":
+                null_col_idx = i
+                break
+
+        if null_col_idx is None:
+            if verbose:
+                click.echo("Warning: No (null) column found in input", err=True)
+        else:
+            for line in tqdm(f, desc="Scanning", disable=not verbose):
+                total_lines += 1
+                parts = line.split("\t")
+                if len(parts) > null_col_idx:
+                    null_value = parts[null_col_idx]
+                    if null_value and null_value != ".":
+                        pairs = null_value.split(";")
+                        for pair in pairs:
+                            if "=" in pair:
+                                field_name = pair.split("=", 1)[0]
+                                all_fields.add(field_name)
+                            elif pair.strip():
+                                all_flags.add(pair.strip())
+
+    if verbose:
+        click.echo(
+            f"Found {len(all_fields)} key-value fields and {len(all_flags)} flags in {total_lines} variants",
+            err=True,
+        )
+
+    # Second pass: process chunks and write Parquet
+    if verbose:
+        click.echo("Pass 2: Converting to Parquet...", err=True)
+
+    # Define memory-efficient dtypes
+    dtype_overrides = {
+        "#CHROM": pl.Categorical,
+        "POS": pl.UInt32,
+        "FILTER": pl.Categorical,
+    }
+
+    # Create a temporary directory for chunk files
+    import tempfile
+    import shutil
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="wombat_prepare_"))
+    part_files = []
+
+    try:
+        with opener(input_file, "rt") as f:
+            header_line = f.readline().strip()
+
+            # Process in chunks
+            chunk_lines = []
+            pbar = tqdm(total=total_lines, desc="Converting", disable=not verbose)
+
+            for line in f:
+                chunk_lines.append(line)
+                if len(chunk_lines) >= chunk_size:
+                    df_chunk = _process_chunk(
+                        header_line, chunk_lines, all_fields, all_flags, dtype_overrides
+                    )
+                    part_file = temp_dir / f"part_{len(part_files):06d}.parquet"
+                    df_chunk.write_parquet(part_file)
+                    part_files.append(part_file)
+                    pbar.update(len(chunk_lines))
+                    chunk_lines = []
+
+            # Process remaining lines
+            if chunk_lines:
+                df_chunk = _process_chunk(
+                    header_line, chunk_lines, all_fields, all_flags, dtype_overrides
+                )
+                part_file = temp_dir / f"part_{len(part_files):06d}.parquet"
+                df_chunk.write_parquet(part_file)
+                part_files.append(part_file)
+                pbar.update(len(chunk_lines))
+
+            pbar.close()
+
+        # Combine all parts into final output using lazy scanning
+        if verbose:
+            click.echo(f"Combining {len(part_files)} parts into final output...", err=True)
+
+        if part_files:
+            # Use scan_parquet to lazily read all parts and write combined output
+            combined = pl.scan_parquet(part_files).collect()
+            combined.write_parquet(output)
+
+        if verbose:
+            click.echo(f"Wrote {len(part_files)} chunks to {output}", err=True)
+
+    finally:
+        # Clean up temporary directory
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _process_chunk(
+    header: str,
+    lines: list,
+    fields: set,
+    flags: set,
+    dtype_overrides: dict,
+) -> pl.DataFrame:
+    """Process a chunk of lines into a DataFrame with expanded INFO fields."""
+    import io
+
+    content = header + "\n" + "".join(lines)
+    df = pl.read_csv(
+        io.StringIO(content),
+        separator="\t",
+        infer_schema_length=10000,
+    )
+
+    # Expand INFO fields from (null) column
+    if "(null)" in df.columns:
+        # Extract key-value fields
+        for field in sorted(fields):
+            df = df.with_columns(
+                pl.col("(null)").str.extract(f"{field}=([^;]+)").alias(field)
+            )
+
+        # Extract boolean flags
+        for flag in sorted(flags):
+            df = df.with_columns(
+                pl.col("(null)").str.contains(f"(^|;){flag}(;|$)").alias(flag)
+            )
+
+        # Drop the original (null) column
+        df = df.drop("(null)")
+
+    # Drop CSQ column if it exists (redundant after expansion)
+    if "CSQ" in df.columns:
+        df = df.drop("CSQ")
+
+    # Apply memory-efficient dtypes
+    for col, dtype in dtype_overrides.items():
+        if col in df.columns:
+            try:
+                df = df.with_columns(pl.col(col).cast(dtype))
+            except Exception:
+                pass  # Skip if cast fails
+
+    return df
+
+
+@cli.command("filter")
 @click.argument("input_file", type=click.Path(exists=True, path_type=Path))
 @click.option(
     "-o",
     "--output",
     type=str,
-    help="Output file prefix. If not specified, prints to stdout.",
+    help="Output file prefix. If not specified, generates from input filename.",
 )
 @click.option(
     "-f",
@@ -43,9 +296,9 @@ import yaml
 @click.option(
     "--debug",
     type=str,
-    help="Debug mode: show rows matching chrom:pos (e.g., chr11:70486013). Displays #CHROM, POS, VEP_SYMBOL, and columns from filter expression.",
+    help="Debug mode: show rows matching chrom:pos (e.g., chr11:70486013).",
 )
-def cli(
+def filter_cmd(
     input_file: Path,
     output: Optional[str],
     output_format: str,
@@ -55,36 +308,43 @@ def cli(
     debug: Optional[str],
 ):
     """
-    Wombat: A tool for processing bcftools tabulated TSV files.
-
-    This command:
+    Process and filter variant data from TSV or Parquet files.
 
     \b
-    1. Expands the '(null)' column containing NAME=value pairs separated by ';'
-    2. Preserves the CSQ (Consequence) column without melting
-    3. Melts sample columns into rows with sample names
-    4. Splits sample values (GT:DP:GQ:AD format) into separate columns:
-       - sample_gt: Genotype
-       - sample_dp: Read depth
-       - sample_gq: Genotype quality
-       - sample_ad: Allele depth (second value from comma-separated list)
-       - sample_vaf: Variant allele frequency (sample_ad / sample_dp)
+    Supports two input formats:
+    - TSV/TSV.gz: Full processing (INFO expansion + melting)
+    - Parquet: Fast processing (melting only, INFO already expanded)
+
+    \b
+    For large files, use 'wombat prepare' first to convert to Parquet,
+    then use 'wombat filter' on the Parquet file for better performance.
+
+    \b
+    This command:
+    1. Expands the '(null)' column (TSV only) into separate columns
+    2. Melts sample columns into rows with sample names
+    3. Splits sample values (GT:DP:GQ:AD format) into separate columns
+    4. Applies quality and expression filters (if config provided)
 
     \b
     Examples:
-        wombat input.tsv -o output
-        wombat input.tsv -o output -f parquet
-        wombat input.tsv > output.tsv
+        wombat filter input.tsv -o output
+        wombat filter prepared.parquet -o output -f parquet
+        wombat filter input.tsv -p pedigree.tsv -F config.yml
     """
     try:
         if verbose:
             click.echo(f"Reading input file: {input_file}", err=True)
 
-        # Detect if file is gzipped based on extension
+        # Detect input format
+        is_parquet = str(input_file).endswith(".parquet")
         is_gzipped = str(input_file).endswith(".gz")
 
-        if verbose and is_gzipped:
-            click.echo("Detected gzipped file", err=True)
+        if verbose:
+            if is_parquet:
+                click.echo("Detected Parquet input (pre-processed)", err=True)
+            elif is_gzipped:
+                click.echo("Detected gzipped TSV file", err=True)
 
         # Read pedigree file if provided
         pedigree_df = None
@@ -109,11 +369,11 @@ def cli(
         if output is None:
             # Generate default output prefix from input filename
             input_stem = input_file.name
-            # Remove .tsv.gz or .tsv extension
-            if input_stem.endswith(".tsv.gz"):
-                input_stem = input_stem[:-7]  # Remove .tsv.gz
-            elif input_stem.endswith(".tsv"):
-                input_stem = input_stem[:-4]  # Remove .tsv
+            # Remove known extensions
+            for ext in [".tsv.gz", ".tsv", ".parquet"]:
+                if input_stem.endswith(ext):
+                    input_stem = input_stem[: -len(ext)]
+                    break
 
             # Add config name if filter is provided
             if filter_config:
@@ -126,24 +386,67 @@ def cli(
         if verbose:
             click.echo("Processing with streaming mode...", err=True)
 
-        # Build lazy query
-        # Force certain columns to string type
-        string_columns = [
-            "FID",
-            "sample_id",
-            "father_id",
-            "mother_id",
-            "FatherBarcode",
-            "MotherBarcode",
-            "sample",
-        ]
-        schema_overrides = {col: pl.Utf8 for col in string_columns}
-        lazy_df = pl.scan_csv(
-            input_file, separator="\t", schema_overrides=schema_overrides
-        )
+        # Build lazy query based on input format
+        if is_parquet:
+            # Parquet input: INFO fields already expanded by 'wombat prepare'
+            lazy_df = pl.scan_parquet(input_file)
 
-        # Apply formatting transformations
-        lazy_df = format_bcftools_tsv_lazy(lazy_df, pedigree_df)
+            # OPTIMIZATION: Apply expression filter BEFORE melting
+            # Expression filters (VEP_IMPACT, etc.) don't depend on sample data
+            if filter_config_data and "expression" in filter_config_data:
+                expression = filter_config_data["expression"]
+                if expression and verbose:
+                    click.echo(
+                        f"Applying expression filter before melting: {expression}",
+                        err=True,
+                    )
+
+                # Collect a small sample to get schema for expression parsing
+                schema_df = lazy_df.head(1).collect()
+                try:
+                    filter_expr = parse_impact_filter_expression(expression, schema_df)
+                    lazy_df = lazy_df.filter(filter_expr)
+
+                    # Count filtered variants
+                    if verbose:
+                        filtered_count = lazy_df.select(pl.len()).collect().item()
+                        click.echo(
+                            f"Variants after expression filter: {filtered_count}",
+                            err=True,
+                        )
+                except ValueError as e:
+                    if verbose:
+                        click.echo(
+                            f"Warning: Could not apply early filter: {e}", err=True
+                        )
+
+            # Now collect and melt (on filtered variants only)
+            df = lazy_df.collect()
+            formatted_df = format_bcftools_tsv_minimal(df, pedigree_df)
+            lazy_df = formatted_df.lazy()
+
+            # Remove expression from config so it's not applied again
+            if filter_config_data and "expression" in filter_config_data:
+                filter_config_data = filter_config_data.copy()
+                del filter_config_data["expression"]
+        else:
+            # TSV input: need full processing (melt + annotation expansion)
+            string_columns = [
+                "FID",
+                "sample_id",
+                "father_id",
+                "mother_id",
+                "FatherBarcode",
+                "MotherBarcode",
+                "sample",
+            ]
+            schema_overrides = {col: pl.Utf8 for col in string_columns}
+            lazy_df = pl.scan_csv(
+                input_file, separator="\t", schema_overrides=schema_overrides
+            )
+
+            # Apply formatting transformations (melt + expand annotations)
+            lazy_df = format_bcftools_tsv_lazy(lazy_df, pedigree_df)
 
         # Apply filters if provided
         if filter_config_data:
@@ -1394,33 +1697,39 @@ def format_bcftools_tsv_minimal(
     Returns:
         Formatted DataFrame with melted samples (annotations still in (null) column)
     """
-    # Find the (null) column
-    if "(null)" not in df.columns:
-        raise ValueError("Column '(null)' not found in the input file")
+    # Determine which columns are sample columns
+    # Sample columns have format "SampleName:GT:SampleName:DP:..." or similar
+    # Non-sample columns are standard VCF columns or annotation columns
 
-    # Get column index of (null)
-    null_col_idx = df.columns.index("(null)")
+    # Standard VCF/annotation columns (not samples)
+    standard_cols = {
+        "#CHROM", "POS", "REF", "ALT", "FILTER", "(null)", "CSQ",
+        "QUAL", "ID", "INFO", "FORMAT"
+    }
 
-    # Split columns into: before (null), (null), and after (null)
-    cols_after = df.columns[null_col_idx + 1 :]
-
-    # Step 1: Identify sample columns (SKIP annotation expansion)
+    # Find sample columns by looking for columns with ":" in the name
+    # that aren't standard columns
     sample_cols = []
     sample_names = []
 
-    for col in cols_after:
-        # Skip CSQ column
-        if col == "CSQ":
+    for col in df.columns:
+        # Skip standard columns
+        if col in standard_cols:
             continue
 
+        # Skip columns that look like VEP annotation fields
+        if col.startswith("VEP_") or col.startswith("AF") or col.startswith("AC"):
+            continue
+
+        # Sample columns typically have ":" in them (GT:DP:GQ:AD format)
         if ":" in col:
             sample_name = col.split(":", 1)[0]
             sample_cols.append(col)
             sample_names.append(sample_name)
-        else:
-            # If no colon, treat the whole column name as sample name
-            sample_cols.append(col)
-            sample_names.append(col)
+        elif col not in df.columns[:10]:
+            # Columns after position 10 that don't match known patterns might be samples
+            # This is a heuristic for unusual sample column formats
+            pass
 
     if not sample_cols:
         # No sample columns to melt

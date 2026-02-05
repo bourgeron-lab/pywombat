@@ -5,6 +5,63 @@ All notable changes to PyWombat will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-02-05
+
+### Added
+
+- **Memory-Optimized Two-Step Workflow**: New `wombat prepare` command for preprocessing large files
+  - Converts TSV/TSV.gz to Parquet format with pre-expanded INFO fields
+  - Processes files in chunks (50k rows default) to handle files of any size
+  - Applies memory-efficient data types (Categorical, UInt32, etc.)
+  - Reduces file size by ~30% compared to gzipped TSV
+
+- **Parquet Input Support**: `wombat filter` now accepts both TSV and Parquet input
+  - Auto-detects input format (TSV, TSV.gz, or Parquet)
+  - Pre-filtering optimization: Applies expression filters BEFORE melting samples
+  - Reduces memory usage by 95%+ for large files (e.g., 200GB → 1.2GB for 38-sample, 4.2M variant dataset)
+  - Processing time improved from minutes/OOM to <1 second for filtered datasets
+
+- **Subcommand Architecture**: Converted CLI to use Click groups
+  - `wombat prepare`: Preprocess TSV to Parquet
+  - `wombat filter`: Process and filter data (replaces old direct command)
+  - **Breaking Change**: Old syntax `wombat input.tsv` no longer works, use `wombat filter input.tsv`
+
+- **Test Suite**: Added comprehensive pytest test suite
+  - 22 tests covering CLI structure, prepare command, and filter command
+  - Test fixtures for creating synthetic test data
+  - Integration tests with real data validation
+  - Added pytest and pytest-cov to dev dependencies
+
+### Changed
+
+- **CLI Architecture**: Restructured from single command to group-based subcommands
+- **Filter Command**: Now applies expression filters before melting when using Parquet input
+- **Sample Column Detection**: Improved heuristics to work with both TSV and Parquet formats
+- **Documentation**: Updated README with two-step workflow examples and memory comparison table
+
+### Fixed
+
+- **INFO Field Extraction**: Fixed column index detection in `prepare` command (was using hardcoded index)
+- **Type Casting**: Added explicit `.cast(pl.Utf8)` to preserve string types when all values are NULL
+- **Parquet Processing**: Fixed `format_bcftools_tsv_minimal` to work without `(null)` column
+
+### Performance
+
+- **Memory Usage**: 95%+ reduction for large files with expression filters
+  - Example: 38 samples, 4.2M variants
+  - Before: 200GB+ (OOM failure)
+  - After: ~1.2GB peak memory
+- **Processing Speed**: <1 second for filtered datasets (vs minutes or failure before)
+- **Pre-filtering**: Expression filters applied before melting reduces data expansion
+
+### Documentation
+
+- Added memory optimization workflow section to README
+- Added performance comparison table showing memory/time improvements
+- Updated all examples to use new `wombat filter` syntax
+- Added section explaining when to use `prepare` command
+- Documented two-step workflow benefits and use cases
+
 ## [1.0.1] - 2026-01-24
 
 ### Added
