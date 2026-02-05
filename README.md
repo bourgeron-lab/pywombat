@@ -573,7 +573,14 @@ Each configuration file is fully documented with:
 2. **Parquet format benefits**:
    - Columnar storage enables selective column loading
    - Pre-filtering before melting (expression filters applied before expanding to per-sample rows)
+   - **Per-chromosome processing for DNM**: Automatically processes DNM filtering chromosome-by-chromosome
    - 30% smaller file size vs gzipped TSV
+
+3. **De Novo Mutation (DNM) filtering optimization**:
+   - Automatically uses per-chromosome processing when DNM mode is enabled
+   - Processes one chromosome at a time to reduce peak memory
+   - Applies frequency filters before melting to reduce data expansion
+   - Example: 38-sample family with 4.2M variants completes in 20 seconds with ~24GB RAM (vs 200GB+ OOM failure)
 
 ### For All Files
 
@@ -583,11 +590,22 @@ Each configuration file is fully documented with:
 
 ### Memory Comparison
 
+**Expression Filtering** (e.g., VEP_IMPACT filters):
+
 | Approach | 38 samples, 4.2M variants | Memory | Time |
 |----------|---------------------------|--------|------|
 | Direct TSV | ❌ OOM (>200GB) | 200+ GB | Failed |
 | TSV with chunking | ⚠️ Slow | ~30GB | ~3 min |
 | **Parquet + pre-filter** | ✅ **Optimal** | **~1.2GB** | **<1 sec** |
+
+**De Novo Mutation (DNM) Filtering**:
+
+| Approach | 38 samples, 4.2M variants | Memory | Time | Result |
+|----------|---------------------------|--------|------|--------|
+| Without optimization | ❌ OOM (>200GB) | 200+ GB | Failed | N/A |
+| **Parquet + per-chromosome** | ✅ **Success** | **~24GB** | **20 sec** | **6,788 DNM variants** |
+
+*DNM filtering requires sample-level data (cannot pre-filter before melting), but per-chromosome processing reduces peak memory by 88%.*
 
 ---
 

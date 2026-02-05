@@ -198,3 +198,123 @@ class TestFilterWithConfig:
 
         output_path = tmp_test_dir / "output.tsv"
         assert output_path.exists(), "Output file was not created"
+
+
+class TestDNMOptimization:
+    """Test DNM filtering optimizations."""
+
+    def test_get_unique_chromosomes(self, tmp_test_dir):
+        """Test chromosome discovery from Parquet file."""
+        import polars as pl
+        from pywombat.cli import get_unique_chromosomes
+
+        # Create a test Parquet file with multiple chromosomes
+        test_data = pl.DataFrame({
+            "#CHROM": ["chr1", "chr2", "chr1", "chrX", "chr22", "chrY", "chr10"],
+            "POS": [100, 200, 300, 400, 500, 600, 700],
+            "REF": ["A", "C", "G", "T", "A", "C", "G"],
+            "ALT": ["T", "G", "C", "A", "T", "G", "C"],
+        })
+
+        parquet_path = tmp_test_dir / "test.parquet"
+        test_data.write_parquet(parquet_path)
+
+        # Get unique chromosomes
+        chroms = get_unique_chromosomes(parquet_path)
+
+        # Should be sorted naturally: 1, 2, 10, 22, X, Y
+        assert chroms == ["chr1", "chr2", "chr10", "chr22", "chrX", "chrY"], \
+            f"Expected natural chromosome order, got {chroms}"
+
+    def test_apply_dnm_prefilters(self, tmp_test_dir):
+        """Test that frequency prefilters reduce variant count."""
+        import polars as pl
+        from pywombat.cli import apply_dnm_prefilters
+
+        # Create test data with varying frequencies
+        test_data = pl.DataFrame({
+            "#CHROM": ["chr1", "chr1", "chr1", "chr1"],
+            "POS": [100, 200, 300, 400],
+            "fafmax_faf95_max_genomes": [0.0001, 0.002, None, 0.00005],
+            "genomes_filters": [".", "FAIL", ".", "."],
+        })
+
+        # Config with frequency filter
+        config = {
+            "dnm": {
+                "fafmax_faf95_max_genomes_max": 0.001,
+                "genomes_filters_pass_only": True
+            }
+        }
+
+        # Apply prefilters
+        lazy_df = test_data.lazy()
+        filtered_lazy = apply_dnm_prefilters(lazy_df, config, verbose=False)
+        result = filtered_lazy.collect()
+
+        # Should keep only rows where:
+        # - fafmax <= 0.001 OR NULL
+        # - genomes_filters == "." OR NULL
+        # Row 0: 0.0001 <= 0.001 AND "." -> PASS
+        # Row 1: 0.002 > 0.001 -> FAIL
+        # Row 2: NULL AND "." -> PASS
+        # Row 3: 0.00005 <= 0.001 AND "." -> PASS
+        assert result.shape[0] == 3, f"Expected 3 rows after prefilter, got {result.shape[0]}"
+
+    def test_dnm_skip_prefilters(self):
+        """Test that skip_prefilters parameter works."""
+        import polars as pl
+        from pywombat.cli import apply_de_novo_filter
+
+        # Create minimal test data with all required columns
+        test_data = pl.DataFrame({
+            "#CHROM": ["chr1", "chr1"],
+            "POS": [100, 200],
+            "sample": ["Sample1", "Sample1"],
+            "sample_gt": ["0/1", "0/1"],
+            "sample_dp": [30, 35],
+            "sample_gq": [50, 50],
+            "sample_vaf": [0.45, 0.48],
+            "father_id": ["Father1", "Father1"],
+            "mother_id": ["Mother1", "Mother1"],
+            "father_gt": ["0/0", "0/0"],
+            "father_dp": [25, 28],
+            "father_gq": [50, 50],
+            "father_vaf": [0.01, 0.01],
+            "mother_gt": ["0/0", "0/0"],
+            "mother_dp": [22, 26],
+            "mother_gq": [50, 50],
+            "mother_vaf": [0.01, 0.01],
+            "sex": ["1", "1"],
+            "fafmax_faf95_max_genomes": [0.002, 0.0005],
+        })
+
+        # DNM config with frequency filter
+        dnm_config = {
+            "sample_dp_min": 10,
+            "sample_gq_min": 18,
+            "sample_vaf_min": 0.2,
+            "parent_dp_min": 10,
+            "parent_gq_min": 18,
+            "parent_vaf_max": 0.02,
+            "fafmax_faf95_max_genomes_max": 0.001,
+        }
+
+        # Apply with skip_prefilters=True (should NOT filter by frequency)
+        result_skip = apply_de_novo_filter(
+            test_data, dnm_config, verbose=False,
+            skip_prefilters=True
+        )
+
+        # Apply with skip_prefilters=False (should filter by frequency)
+        result_no_skip = apply_de_novo_filter(
+            test_data, dnm_config, verbose=False,
+            skip_prefilters=False
+        )
+
+        # With skip_prefilters=True, both rows pass (no frequency filter applied)
+        # With skip_prefilters=False, only row 2 passes (0.0005 <= 0.001)
+        assert result_skip.shape[0] == 2, \
+            f"Expected 2 rows with skip_prefilters=True, got {result_skip.shape[0]}"
+        assert result_no_skip.shape[0] == 1, \
+            f"Expected 1 row with skip_prefilters=False, got {result_no_skip.shape[0]}"

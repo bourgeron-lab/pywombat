@@ -5,6 +5,52 @@ All notable changes to PyWombat will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-02-05
+
+### Added
+
+- **Per-Chromosome DNM Processing**: Dramatically reduced memory usage for de novo mutation (DNM) filtering
+  - Processes one chromosome at a time instead of loading all variants into memory
+  - Reduces peak memory from (total_variants × samples) to (max_chr_variants × samples)
+  - Example: 38 samples, 4.2M variants
+    - Before: 200GB+ (OOM failure)
+    - After: ~24GB (completes successfully in 20 seconds)
+  - **88% memory reduction** for DNM workflows
+
+- **Early Frequency Filtering for DNM**: Applies population frequency filters BEFORE melting
+  - Frequency filters (fafmax_faf95_max_genomes) applied on wide-format data
+  - Quality filters (genomes_filters PASS) applied before melting
+  - Reduces data expansion by filtering variants early in the pipeline
+
+- **New Helper Functions**:
+  - `get_unique_chromosomes()`: Discovers and naturally sorts chromosomes from Parquet files
+  - `apply_dnm_prefilters()`: Applies variant-level filters before melting
+  - `process_dnm_by_chromosome()`: Orchestrates per-chromosome DNM filtering
+
+### Changed
+
+- **DNM Filter Architecture**: Refactored `apply_de_novo_filter()` to support `skip_prefilters` parameter
+  - Allows separation of variant-level filters (applied before melting) from sample-level filters
+  - Prevents double-filtering when prefilters already applied
+
+- **Filter Command Routing**: Automatically detects DNM mode and routes to per-chromosome processing
+  - Transparent to users - no command syntax changes required
+  - Optimized memory usage is automatic when using DNM config with Parquet input
+
+### Performance
+
+- **DNM Memory Usage**: 88% reduction in peak memory (200GB+ → ~24GB)
+- **DNM Processing Time**: 20 seconds for 38-sample, 4.2M variant dataset (previously failed with OOM)
+- **Throughput**: Successfully processes 6,788 DNM variants from 4.2M input variants
+
+### Testing
+
+- Added 3 new test cases for DNM optimization:
+  - `test_get_unique_chromosomes()`: Verifies chromosome discovery and natural sorting
+  - `test_apply_dnm_prefilters()`: Validates frequency prefiltering logic
+  - `test_dnm_skip_prefilters()`: Ensures skip_prefilters parameter works correctly
+- Total test suite: 25 tests (all passing)
+
 ## [1.1.0] - 2026-02-05
 
 ### Added

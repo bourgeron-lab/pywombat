@@ -1,6 +1,6 @@
 [project]
 name = "pywombat"
-version = "1.1.0"
+version = "1.2.0"
 description = "A CLI tool for processing and filtering bcftools tabulated TSV files with pedigree support"
 readme = "README.md"
 authors = [{ name = "Freddy Cliquet", email = "fcliquet@pasteur.fr" }]

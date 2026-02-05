@@ -264,6 +264,111 @@ def _process_chunk(
     return df
 
 
+def process_dnm_by_chromosome(
+    input_file: Path,
+    pedigree_df: pl.DataFrame,
+    filter_config: dict,
+    output_format: str,
+    verbose: bool
+) -> pl.DataFrame:
+    """Process DNM filtering chromosome by chromosome to reduce memory usage.
+
+    Processes each chromosome separately:
+    1. Load one chromosome at a time from Parquet
+    2. Apply frequency/quality prefilters (before melting)
+    3. Melt samples
+    4. Apply DNM filters
+    5. Combine results from all chromosomes
+
+    This reduces peak memory from (total_variants × samples) to
+    (max_chr_variants × samples).
+
+    Args:
+        input_file: Path to Parquet file
+        pedigree_df: Pedigree DataFrame with sample relationships
+        filter_config: Filter configuration dict
+        output_format: Output format (tsv, tsv.gz, parquet)
+        verbose: Whether to print progress messages
+
+    Returns:
+        Combined DataFrame with DNM-filtered variants from all chromosomes
+    """
+    # Get list of chromosomes
+    chromosomes = get_unique_chromosomes(input_file)
+
+    if verbose:
+        click.echo(
+            f"DNM per-chromosome processing: {len(chromosomes)} chromosomes", err=True
+        )
+
+    results = []
+    dnm_cfg = {}
+    dnm_cfg.update(filter_config.get("quality", {}))
+    dnm_cfg.update(filter_config.get("dnm", {}))
+
+    for chrom in chromosomes:
+        if verbose:
+            click.echo(f"Processing chromosome {chrom}...", err=True)
+
+        # Load only this chromosome
+        lazy_df = pl.scan_parquet(input_file).filter(
+            pl.col("#CHROM") == chrom
+        )
+
+        # Apply frequency filters BEFORE melting (Optimization 2)
+        lazy_df = apply_dnm_prefilters(lazy_df, filter_config, verbose=False)
+
+        # Count variants after prefiltering
+        if verbose:
+            pre_count = lazy_df.select(pl.count()).collect().item()
+            click.echo(f"  Chromosome {chrom}: {pre_count} variants after prefilter", err=True)
+
+        # Collect, melt, and apply DNM filters
+        df = lazy_df.collect()
+
+        if df.shape[0] == 0:
+            if verbose:
+                click.echo(f"  Chromosome {chrom}: No variants after prefilter, skipping", err=True)
+            continue
+
+        formatted_df = format_bcftools_tsv_minimal(df, pedigree_df)
+
+        if verbose:
+            click.echo(
+                f"  Chromosome {chrom}: {formatted_df.shape[0]} rows after melting", err=True
+            )
+
+        # Apply DNM filters (skip prefilters since already applied)
+        filtered_df = apply_de_novo_filter(
+            formatted_df, dnm_cfg, verbose=False, pedigree_df=pedigree_df,
+            skip_prefilters=True
+        )
+
+        if verbose:
+            click.echo(
+                f"  Chromosome {chrom}: {filtered_df.shape[0]} variants passed DNM filter", err=True
+            )
+
+        if filtered_df.shape[0] > 0:
+            results.append(filtered_df)
+
+    # Combine results
+    if not results:
+        if verbose:
+            click.echo("No variants passed DNM filters across all chromosomes", err=True)
+        # Return empty DataFrame with correct schema
+        return pl.DataFrame()
+
+    final_df = pl.concat(results)
+
+    if verbose:
+        click.echo(
+            f"DNM filtering complete: {final_df.shape[0]} total variants", err=True
+        )
+
+    return final_df
+
+
 @cli.command("filter")
 @click.argument("input_file", type=click.Path(exists=True, path_type=Path))
 @click.option(
@@ -390,6 +495,42 @@ def filter_cmd(
         if is_parquet:
             # Parquet input: INFO fields already expanded by 'wombat prepare'
             lazy_df = pl.scan_parquet(input_file)
+
+            # Check if DNM mode is enabled - use per-chromosome processing
+            if filter_config_data and filter_config_data.get("dnm", {}).get("enabled", False):
+                if verbose:
+                    click.echo("DNM mode: Using per-chromosome processing for memory efficiency", err=True)
+
+                # DNM requires pedigree
+                if pedigree_df is None:
+                    click.echo("Error: DNM filtering requires a pedigree file (--pedigree option)", err=True)
+                    raise click.Abort()
+
+                # Process DNM filtering chromosome by chromosome
+                formatted_df = process_dnm_by_chromosome(
+                    input_file,
+                    pedigree_df,
+                    filter_config_data,
+                    output_format,
+                    verbose
+                )
+
+                # Write output directly
+                output_path = Path(f"{output}.{output_format}")
+
+                if output_format == "tsv":
+                    formatted_df.write_csv(output_path, separator="\t")
+                elif output_format == "tsv.gz":
+                    csv_content = formatted_df.write_csv(separator="\t")
+                    with gzip.open(output_path, "wt") as f:
+                        f.write(csv_content)
+                elif output_format == "parquet":
+                    formatted_df.write_parquet(output_path)
+
+                if verbose:
+                    click.echo(f"DNM variants written to {output_path}", err=True)
+
+                return
 
             # OPTIMIZATION: Apply expression filter BEFORE melting
             # Expression filters (VEP_IMPACT, etc.) don't depend on sample data
@@ -800,11 +941,47 @@ def _pos_in_par(chrom: str, pos: int, par_regions: dict) -> bool:
     return False
 
 
+def get_unique_chromosomes(parquet_file: Path) -> list[str]:
+    """Get list of unique chromosomes from Parquet file, sorted naturally.
+
+    Args:
+        parquet_file: Path to Parquet file
+
+    Returns:
+        Sorted list of chromosome names (e.g., ['1', '2', ..., '22', 'X', 'Y', 'MT'])
+    """
+    # Read just the #CHROM column to get unique values
+    df = pl.scan_parquet(parquet_file).select("#CHROM").unique().collect()
+    chroms = df["#CHROM"].to_list()
+
+    # Sort chromosomes properly (1, 2, ..., 22, X, Y, MT)
+    def chrom_sort_key(chrom: str) -> tuple:
+        """Sort key for natural chromosome ordering."""
+        chrom_norm = chrom.replace("chr", "").replace("Chr", "").replace("CHR", "").upper()
+
+        # Try to parse as integer (autosomes)
+        try:
+            return (0, int(chrom_norm), "")
+        except ValueError:
+            pass
+
+        # Sex chromosomes and mitochondrial
+        if chrom_norm in ["X", "Y", "MT", "M"]:
+            order = {"X": 23, "Y": 24, "MT": 25, "M": 25}
+            return (1, order.get(chrom_norm, 99), chrom_norm)
+
+        # Other chromosomes (e.g., scaffolds)
+        return (2, 0, chrom_norm)
+
+    return sorted(chroms, key=chrom_sort_key)
+
+
 def apply_de_novo_filter(
     df: pl.DataFrame,
     dnm_config: dict,
     verbose: bool = False,
     pedigree_df: Optional[pl.DataFrame] = None,
+    skip_prefilters: bool = False,
 ) -> pl.DataFrame:
     """Apply de novo detection filters to dataframe using vectorized operations.
 
@@ -815,6 +992,13 @@ def apply_de_novo_filter(
 
     This function will read `sex` from `df` when present; otherwise it will use
     the `pedigree_df` (which should contain `sample_id` and `sex`).
+
+    Args:
+        df: DataFrame with melted samples
+        dnm_config: DNM configuration dict
+        verbose: Whether to print progress messages
+        pedigree_df: Pedigree DataFrame
+        skip_prefilters: If True, skips frequency/genomes_filters (assumes already applied)
     """
     if not dnm_config:
         return df
@@ -979,43 +1163,45 @@ def apply_de_novo_filter(
             err=True,
         )
 
-    # Apply fafmax_faf95_max_genomes filter if specified
-    if fafmax_max is not None:
-        if "fafmax_faf95_max_genomes" in df.columns:
-            df = df.filter(
-                (
-                    pl.col("fafmax_faf95_max_genomes").cast(pl.Float64, strict=False)
-                    <= fafmax_max
+    # Apply frequency/quality prefilters if not already applied
+    if not skip_prefilters:
+        # Apply fafmax_faf95_max_genomes filter if specified
+        if fafmax_max is not None:
+            if "fafmax_faf95_max_genomes" in df.columns:
+                df = df.filter(
+                    (
+                        pl.col("fafmax_faf95_max_genomes").cast(pl.Float64, strict=False)
+                        <= fafmax_max
+                    )
+                    | pl.col("fafmax_faf95_max_genomes").is_null()
                 )
-                | pl.col("fafmax_faf95_max_genomes").is_null()
-            )
-            if verbose:
+                if verbose:
+                    click.echo(
+                        f"DNM: {df.shape[0]} variants after fafmax_faf95_max_genomes filter (<={fafmax_max})",
+                        err=True,
+                    )
+            elif verbose:
                 click.echo(
-                    f"DNM: {df.shape[0]} variants after fafmax_faf95_max_genomes filter (<={fafmax_max})",
+                    "DNM: Warning - fafmax_faf95_max_genomes column not found, skipping frequency filter",
                     err=True,
                 )
-        elif verbose:
-            click.echo(
-                "DNM: Warning - fafmax_faf95_max_genomes column not found, skipping frequency filter",
-                err=True,
-            )
 
-    # Apply genomes_filters filter if specified
-    if genomes_filters_pass_only:
-        if "genomes_filters" in df.columns:
-            df = df.filter(
-                (pl.col("genomes_filters") == ".") | pl.col("genomes_filters").is_null()
-            )
-            if verbose:
+        # Apply genomes_filters filter if specified
+        if genomes_filters_pass_only:
+            if "genomes_filters" in df.columns:
+                df = df.filter(
+                    (pl.col("genomes_filters") == ".") | pl.col("genomes_filters").is_null()
+                )
+                if verbose:
+                    click.echo(
+                        f"DNM: {df.shape[0]} variants after genomes_filters filter (pass only)",
+                        err=True,
+                    )
+            elif verbose:
                 click.echo(
-                    f"DNM: {df.shape[0]} variants after genomes_filters filter (pass only)",
+                    "DNM: Warning - genomes_filters column not found, skipping genomes_filters filter",
                     err=True,
                 )
-        elif verbose:
-            click.echo(
-                "DNM: Warning - genomes_filters column not found, skipping genomes_filters filter",
-                err=True,
-            )
 
     # Build parent quality checks (common to all)
     father_qual_ok = (pl.col("father_dp").cast(pl.Float64, strict=False) >= p_dp) & (
@@ -2291,6 +2477,55 @@ def process_with_progress(
 
     if verbose:
         click.echo("Processing complete.", err=True)
+
+
+def apply_dnm_prefilters(
+    lazy_df: pl.LazyFrame,
+    filter_config: dict,
+    verbose: bool = False
+) -> pl.LazyFrame:
+    """Apply variant-level DNM filters before melting.
+
+    These filters don't require sample-level data and can be applied
+    on wide-format data to reduce memory usage.
+
+    Applies:
+    - Population frequency filters (fafmax_faf95_max_genomes_max)
+    - Quality filters (genomes_filters PASS only)
+
+    Args:
+        lazy_df: LazyFrame with wide-format data (not melted)
+        filter_config: Filter configuration dict
+        verbose: Whether to print progress messages
+
+    Returns:
+        Filtered LazyFrame
+    """
+    dnm_config = filter_config.get("dnm", {})
+
+    # Frequency filter
+    fafmax_max = dnm_config.get("fafmax_faf95_max_genomes_max")
+    if fafmax_max is not None:
+        lazy_df = lazy_df.filter(
+            (pl.col("fafmax_faf95_max_genomes").cast(pl.Float64, strict=False) <= fafmax_max)
+            | pl.col("fafmax_faf95_max_genomes").is_null()
+        )
+        if verbose:
+            click.echo(
+                f"DNM prefilter: Applied frequency filter (fafmax <= {fafmax_max})", err=True
+            )
+
+    # Quality filter (genomes_filters PASS only)
+    if dnm_config.get("genomes_filters_pass_only", False):
+        lazy_df = lazy_df.filter(
+            (pl.col("genomes_filters") == ".") | pl.col("genomes_filters").is_null()
+        )
+        if verbose:
+            click.echo(
+                "DNM prefilter: Applied genomes_filters PASS filter", err=True
+            )
+
+    return lazy_df
 
 
 def apply_filters_lazy(
