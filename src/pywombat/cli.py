@@ -1272,7 +1272,7 @@ def apply_de_novo_filter(
 def parse_impact_filter_expression(expression: str, df: pl.DataFrame) -> pl.Expr:
     """Parse a filter expression string into a Polars expression."""
     # Replace operators with Polars equivalents
-    # Support: =, !=, <=, >=, <, >, &, |, ()
+    # Support: =, !=, <=, >=, <, >, &, |, (), contains, is_empty, is_snv, is_indel
 
     expr_str = expression.strip()
 
@@ -1283,6 +1283,58 @@ def parse_impact_filter_expression(expression: str, df: pl.DataFrame) -> pl.Expr
     def parse_condition(condition: str) -> pl.Expr:
         """Parse a single condition into a Polars expression."""
         condition = condition.strip()
+
+        # Check for special predicates (column-less operators)
+        if condition.lower() == "is_snv":
+            # SNV: both REF and ALT are single nucleotides (A, C, G, or T)
+            if "REF" not in df.columns or "ALT" not in df.columns:
+                raise ValueError("is_snv requires REF and ALT columns in dataframe")
+
+            nucleotides = ["a", "c", "g", "t", "A", "C", "G", "T"]
+            return (
+                (pl.col("REF").str.len_chars() == 1)
+                & (pl.col("ALT").str.len_chars() == 1)
+                & (pl.col("REF").is_in(nucleotides))
+                & (pl.col("ALT").is_in(nucleotides))
+            )
+
+        if condition.lower() == "is_indel":
+            # INDEL: not a SNV (length difference or non-nucleotide)
+            if "REF" not in df.columns or "ALT" not in df.columns:
+                raise ValueError("is_indel requires REF and ALT columns in dataframe")
+
+            nucleotides = ["a", "c", "g", "t", "A", "C", "G", "T"]
+            is_snv = (
+                (pl.col("REF").str.len_chars() == 1)
+                & (pl.col("ALT").str.len_chars() == 1)
+                & (pl.col("REF").is_in(nucleotides))
+                & (pl.col("ALT").is_in(nucleotides))
+            )
+            return ~is_snv
+
+        # Check for "is_empty" operator (must check before splitting by operators)
+        is_empty_match = re.match(r"^(\w+)\s+is_empty$", condition, re.IGNORECASE)
+        if is_empty_match:
+            col_name = is_empty_match.group(1)
+            if col_name not in df.columns:
+                raise ValueError(f"Column '{col_name}' not found in dataframe")
+
+            # Check if value is null OR empty string OR "."
+            col_expr = pl.col(col_name)
+            return col_expr.is_null() | (col_expr == "") | (col_expr == ".")
+
+        # Check for "contains" operator
+        contains_match = re.match(r"^(\w+)\s+contains\s+(.+)$", condition, re.IGNORECASE)
+        if contains_match:
+            col_name = contains_match.group(1)
+            value = contains_match.group(2).strip().strip("'\"")
+
+            if col_name not in df.columns:
+                raise ValueError(f"Column '{col_name}' not found in dataframe")
+
+            # Case-insensitive substring search
+            col_expr = pl.col(col_name).str.to_lowercase()
+            return col_expr.str.contains(value.lower())
 
         # Try different operators in order of specificity
         for op in ["<=", ">=", "!=", "=", "<", ">"]:

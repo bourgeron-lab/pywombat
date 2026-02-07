@@ -7,15 +7,15 @@ A high-performance CLI tool for processing and filtering bcftools tabulated TSV 
 
 ## Features
 
-✨ **Fast Processing**: Uses Polars for efficient data handling
-🔬 **Quality Filtering**: Configurable depth, quality, and VAF thresholds
-👨‍👩‍👧 **Pedigree Support**: Trio and family analysis with parent genotypes
-🧬 **De Novo Detection**: Sex-chromosome-aware DNM identification
-📊 **Flexible Output**: TSV, compressed TSV, or Parquet formats
-🎯 **Expression Filters**: Complex filtering with logical expressions
-🏷️ **Boolean Flag Support**: INFO field flags (PASS, DB, etc.) extracted as True/False columns
-⚡ **Memory Optimized**: Two-step workflow for large files (prepare → filter)
-💾 **Parquet Support**: Pre-process large files for repeated, memory-efficient analysis
+- ✨ **Fast Processing**: Uses Polars for efficient data handling
+- 🔬 **Quality Filtering**: Configurable depth, quality, and VAF thresholds
+- 👨‍👩‍👧 **Pedigree Support**: Trio and family analysis with parent genotypes
+- 🧬 **De Novo Detection**: Sex-chromosome-aware DNM identification
+- 📊 **Flexible Output**: TSV, compressed TSV, or Parquet formats
+- 🎯 **Expression Filters**: Complex filtering with logical expressions
+- 🏷️ **Boolean Flag Support**: INFO field flags (PASS, DB, etc.) extracted as True/False columns
+- ⚡ **Memory Optimized**: Two-step workflow for large files (prepare → filter)
+- 💾 **Parquet Support**: Pre-process large files for repeated, memory-efficient analysis
 
 ---
 
@@ -302,6 +302,10 @@ Create custom filters using logical expressions:
 - **Logical**: `&` (AND), `|` (OR)
 - **Grouping**: `(`, `)`
 - **Null checks**: `= null`, `!= null`
+- **String matching**: `contains` (case-insensitive substring search)
+- **Empty checks**: `is_empty` (checks for null, empty string, or ".")
+- **Variant type**: `is_snv` (both REF and ALT are single nucleotides A/C/G/T)
+- **Variant type**: `is_indel` (insertions, deletions, MNVs - not SNVs)
 
 ### Example Expressions
 
@@ -317,6 +321,21 @@ expression: "VEP_Consequence = frameshift_variant | VEP_Consequence = stop_gaine
 
 # Multiple criteria
 expression: "VEP_IMPACT = HIGH & VEP_CANONICAL = YES & gnomad_AF < 0.01 & CADD_PHRED >= 25"
+
+# Pathogenic variants that passed gnomAD filters
+expression: "VEP_CLIN_SIG contains 'pathogenic' & genomes_filters is_empty"
+
+# Pathogenic or likely pathogenic variants
+expression: "(VEP_CLIN_SIG contains 'pathogenic' | VEP_CLIN_SIG contains 'likely_pathogenic') & genomes_filters is_empty"
+
+# Different quality thresholds for SNVs vs INDELs
+expression: "(is_snv & QUAL > 18) | (is_indel & QUAL > 22)"
+
+# High-quality SNVs only
+expression: "is_snv & QUAL > 30 & genomes_filters is_empty"
+
+# High-impact INDELs with pathogenic annotation
+expression: "is_indel & VEP_IMPACT = HIGH & VEP_CLIN_SIG contains 'pathogenic'"
 ```
 
 ---
