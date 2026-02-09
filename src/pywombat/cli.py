@@ -1280,9 +1280,17 @@ def apply_de_novo_filter(
 
 
 def parse_impact_filter_expression(expression: str, df: pl.DataFrame) -> pl.Expr:
-    """Parse a filter expression string into a Polars expression."""
+    """Parse a filter expression string into a Polars expression.
+
+    Supported operators:
+        - Comparison: =, !=, <=, >=, <, >
+        - Logical: &, |, ()
+        - Special: contains, is_empty, not_empty, is_snv, is_indel
+
+    Column names can contain dots (e.g., cadd_v1.7, faf95.joint).
+    """
     # Replace operators with Polars equivalents
-    # Support: =, !=, <=, >=, <, >, &, |, (), contains, is_empty, is_snv, is_indel
+    # Support: =, !=, <=, >=, <, >, &, |, (), contains, is_empty, not_empty, is_snv, is_indel
 
     expr_str = expression.strip()
 
@@ -1323,7 +1331,8 @@ def parse_impact_filter_expression(expression: str, df: pl.DataFrame) -> pl.Expr
             return ~is_snv
 
         # Check for "is_empty" operator (must check before splitting by operators)
-        is_empty_match = re.match(r"^(\w+)\s+is_empty$", condition, re.IGNORECASE)
+        # Note: [\w.]+ allows column names with dots (e.g., cadd_v1.7, faf95.joint)
+        is_empty_match = re.match(r"^([\w.]+)\s+is_empty$", condition, re.IGNORECASE)
         if is_empty_match:
             col_name = is_empty_match.group(1)
             if col_name not in df.columns:
@@ -1333,8 +1342,22 @@ def parse_impact_filter_expression(expression: str, df: pl.DataFrame) -> pl.Expr
             col_expr = pl.col(col_name)
             return col_expr.is_null() | (col_expr == "") | (col_expr == ".")
 
+        # Check for "not_empty" operator
+        # Note: [\w.]+ allows column names with dots (e.g., cadd_v1.7, faf95.joint)
+        not_empty_match = re.match(r"^([\w.]+)\s+not_empty$", condition, re.IGNORECASE)
+        if not_empty_match:
+            col_name = not_empty_match.group(1)
+            if col_name not in df.columns:
+                raise ValueError(f"Column '{col_name}' not found in dataframe")
+
+            # Returns TRUE when value is NOT null, NOT empty string, and NOT "."
+            # Logical negation of is_empty
+            col_expr = pl.col(col_name)
+            return ~(col_expr.is_null() | (col_expr == "") | (col_expr == "."))
+
         # Check for "contains" operator
-        contains_match = re.match(r"^(\w+)\s+contains\s+(.+)$", condition, re.IGNORECASE)
+        # Note: [\w.]+ allows column names with dots (e.g., cadd_v1.7, faf95.joint)
+        contains_match = re.match(r"^([\w.]+)\s+contains\s+(.+)$", condition, re.IGNORECASE)
         if contains_match:
             col_name = contains_match.group(1)
             value = contains_match.group(2).strip().strip("'\"")
@@ -1433,7 +1456,12 @@ def parse_impact_filter_expression(expression: str, df: pl.DataFrame) -> pl.Expr
                 sub_expr, new_i = build_expression(tokens, i + 1)
                 if result is None:
                     result = sub_expr
-                i = new_i
+                else:
+                    # If we already have a result and encounter another sub-expression
+                    # without an explicit operator, combine with AND (like conditions)
+                    result = result & sub_expr
+                # Set i to new_i - 1 because the loop will increment by 1
+                i = new_i - 1
             elif token == ")":
                 # End of sub-expression
                 return result, i + 1

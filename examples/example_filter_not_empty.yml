@@ -1,0 +1,37 @@
+# Example: Filter for variants with ClinVar annotations
+#
+# The not_empty operator filters for values that are NOT null, NOT empty string,
+# and NOT "." (the standard missing value indicator in VCF/genomic files).
+#
+# Use case: Require that specific annotation fields have data present.
+# This is the opposite of is_empty, which checks for missing/empty values.
+
+quality:
+  sample_dp_min: 10
+  sample_gq_min: 19
+  sample_vaf_het_min: 0.25
+  sample_vaf_het_max: 0.75
+  sample_vaf_homalt_min: 0.85
+  filter_no_alt_allele: true
+
+# Require ClinVar annotation to be present
+# This will only keep variants that have a value in the VEP_CLIN_SIG field
+expression: "VEP_CLIN_SIG not_empty & VEP_CANONICAL = YES"
+
+# Alternative examples (uncomment to use):
+
+# Require both ClinVar and LoF annotations to be present
+# expression: "VEP_CLIN_SIG not_empty & VEP_LoF not_empty & VEP_IMPACT = HIGH"
+
+# Variants with annotations that passed gnomAD filters
+# (combining not_empty and is_empty operators)
+# expression: "VEP_CLIN_SIG not_empty & genomes_filters is_empty"
+
+# Filter for variants that FAILED gnomAD filters (have filter flags)
+# expression: "genomes_filters not_empty & fafmax_faf95_max_genomes < 0.001"
+
+# Comparison: is_empty vs not_empty
+# - genomes_filters is_empty    -> variants that PASSED filters (no flags)
+# - genomes_filters not_empty   -> variants that FAILED filters (have flags)
+# - VEP_CLIN_SIG not_empty      -> variants with ClinVar annotations
+# - VEP_LoF not_empty           -> variants with Loss-of-Function predictions

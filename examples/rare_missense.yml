@@ -26,17 +26,17 @@
 # ============================================================================
 
 quality:
-  sample_dp_min: 10            # Minimum read depth (coverage)
-  sample_gq_min: 19            # Minimum genotype quality score
+  sample_dp_min: 10 # Minimum read depth (coverage)
+  sample_gq_min: 19 # Minimum genotype quality score
 
   # VAF (variant allele frequency) thresholds ensure proper allelic balance
-  sample_vaf_het_min: 0.25     # Het (0/1): minimum 25% alternate allele
-  sample_vaf_het_max: 0.75     # Het (0/1): maximum 75% to exclude mis-called hom
-  sample_vaf_homalt_min: 0.85  # Hom alt (1/1): minimum 85% alternate allele
+  sample_vaf_het_min: 0.25 # Het (0/1): minimum 25% alternate allele
+  sample_vaf_het_max: 0.75 # Het (0/1): maximum 75% to exclude mis-called hom
+  sample_vaf_homalt_min: 0.85 # Hom alt (1/1): minimum 85% alternate allele
   sample_vaf_hom_ref_max: 0.15 # Hom ref (0/0): maximum 15% alternate allele
 
-  apply_to_parents: false      # Apply same quality filters to parent genotypes
-  filter_no_alt_allele: true   # Exclude 0/0 and ./. genotypes
+  apply_to_parents: false # Apply same quality filters to parent genotypes
+  filter_no_alt_allele: true # Exclude 0/0 and ./. genotypes
 
   # Uncomment to filter for only homozygous alternative 1/1 variants
   # Useful for recessive disease analysis
@@ -44,22 +44,20 @@ quality:
 
 expression: >
   VEP_CANONICAL = YES &
-  (VEP_Consequence contains 'missense') &
+  VEP_Consequence contains 'missense' &
   (fafmax_faf95_max_genomes = null | fafmax_faf95_max_genomes <= 0.001) &
   (
+    ((is_snv & AQ > 15) | (is_indel & AQ > 22)) &
+    genomes_filters is_empty &
     (
-      ((is_snv & AQ > 15) | (is_indel & AQ > 22)) &
-      genomes_filters is_empty &
-      (
-        MPC >= 2.6 |
-        am_pathogenecity >= 0.9 |
-        REVEL >= 0.773 |
-        cadd_v1.7 >= 28.3 |
-        MISTIC_pred >= 0.8 |
-        popEVE <= -4.6 |
-        VEP_CLIN_SIG contains 'pathogenic' |
-        VEP_CLIN_SIG contains 'likely_pathogenic'
-      )
+      (MPC not_empty & MPC >= 2.6) |
+      (am_pathogenicity not_empty & am_pathogenicity >= 0.9) |
+      (REVEL not_empty & REVEL >= 0.773) |
+      (cadd_v1.7 not_empty & cadd_v1.7 >= 28.3) |
+      (MISTIC_pred not_empty & MISTIC_pred >= 0.8) |
+      (popEVE not_empty & popEVE <= -4.6) |
+      VEP_CLIN_SIG contains 'pathogenic' |
+      VEP_CLIN_SIG contains 'likely_pathogenic'
     )
   )
 
@@ -78,7 +76,7 @@ expression: >
 #
 # Pathogenicity scores (at least one recommended):
 #   • MPC: Missense badness, PolyPhen-2, and constraint
-#   • am_pathogenecity: AlphaMissense pathogenicity score
+#   • am_pathogenicity: AlphaMissense pathogenicity score
 #   • REVEL: Ensemble missense predictor
 #   • cadd_v1.7: CADD v1.7 phred score
 #   • MISTIC_pred: MISTIC prediction

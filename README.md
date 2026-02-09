@@ -347,9 +347,11 @@ Create custom filters using logical expressions:
 - **Grouping**: `(`, `)`
 - **Null checks**: `= null`, `!= null`
 - **String matching**: `contains` (case-insensitive substring search)
-- **Empty checks**: `is_empty` (checks for null, empty string, or ".")
+- **Empty checks**: `is_empty` (checks for null, empty string, or "."), `not_empty` (negation of is_empty)
 - **Variant type**: `is_snv` (both REF and ALT are single nucleotides A/C/G/T)
 - **Variant type**: `is_indel` (insertions, deletions, MNVs - not SNVs)
+
+**Note**: Column names can contain dots (e.g., `cadd_v1.7`, `faf95.joint`) and alphanumeric characters with underscores.
 
 ### Example Expressions
 
@@ -380,6 +382,19 @@ expression: "is_snv & QUAL > 30 & genomes_filters is_empty"
 
 # High-impact INDELs with pathogenic annotation
 expression: "is_indel & VEP_IMPACT = HIGH & VEP_CLIN_SIG contains 'pathogenic'"
+
+# Filter for variants with ClinVar annotations present
+expression: "VEP_CLIN_SIG not_empty & VEP_CANONICAL = YES"
+
+# Require both ClinVar and LoF annotations
+expression: "VEP_CLIN_SIG not_empty & VEP_LoF not_empty & VEP_IMPACT = HIGH"
+
+# Combine is_empty and not_empty for complex logic
+# Variants with annotations that passed gnomAD filters
+expression: "VEP_CLIN_SIG not_empty & genomes_filters is_empty"
+
+# Column names with dots are supported
+expression: "cadd_v1.7 >= 28.3 & REVEL not_empty"
 ```
 
 ---
