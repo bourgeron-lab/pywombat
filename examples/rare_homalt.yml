@@ -1,0 +1,128 @@
+# ============================================================================
+# PyWombat Configuration: Rare Homozygous Alternative Variants
+# ============================================================================
+#
+# Filters for homozygous alternative variants in recessive disease studies.
+# Only variants where the sample is 1/1 (homozygous alternate) are kept.
+#
+# Target variants:
+#   • Autosomal recessive disease analysis
+#   • Homozygosity mapping
+#   • Consanguineous families
+#   • Compound heterozygote identification (when combined with gene grouping)
+#
+# Usage:
+#   uvx pywombat filter input.tsv -F examples/rare_homalt.yml -o output
+#   uvx pywombat filter prepared.parquet -F examples/rare_homalt.yml -o output
+#
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Quality Filters
+# ----------------------------------------------------------------------------
+# Ensures high-confidence homozygous alternative calls
+
+quality:
+  sample_dp_min: 10 # Minimum read depth (coverage)
+  sample_gq_min: 19 # Minimum genotype quality score
+
+  # VAF threshold for homozygous alternative (1/1)
+  # High threshold ensures true homozygous calls
+  sample_vaf_homalt_min: 0.98 # At least 85% alternate allele
+
+  # Keep only homozygous alternative 1/1 genotypes
+  # This is the KEY setting for recessive analysis
+  # When true: excludes heterozygous (0/1), multi-allelic (2/2, 3/3), and hom ref (0/0)
+  # When false: keeps both het and homalt (default behavior)
+  homalt_only: true
+
+  # Note: filter_no_alt_allele is redundant when homalt_only is true
+  # but can be left enabled for clarity
+  filter_no_alt_allele: true
+
+  # Note: sample_vaf_het_min/max are ignored when homalt_only is true
+  # since only 1/1 genotypes are kept
+
+# ----------------------------------------------------------------------------
+# Expression Filter
+# ----------------------------------------------------------------------------
+# Multi-criteria filter for rare, high-impact variants
+#
+# Logic: Canonical transcripts with HIGH impact and ultra-rare in gnomAD
+
+expression: >
+  VEP_CANONICAL = YES &
+  VEP_IMPACT = HIGH &
+  VEP_LoF = HC &
+  VEP_LoF_flags = . &
+  (fafmax_faf95_max_genomes = null | fafmax_faf95_max_genomes <= 0.01) &
+  (nhomalt_genomes = null | nhomalt_genomes <= 10) &
+  (
+    (
+      ((is_snv & AQ > 15) | (is_indel & AQ > 22)) &
+      genomes_filters is_empty
+    ) |
+    (
+      VEP_CLIN_SIG contains 'pathogenic' | 
+      VEP_CLIN_SIG contains 'likely_pathogenic'
+    )
+  )
+
+# ----------------------------------------------------------------------------
+# Required Input Columns
+# ----------------------------------------------------------------------------
+#
+# VEP annotations (from bcftools +split-vep):
+#   • VEP_CANONICAL: Whether transcript is canonical (YES/NO)
+#   • VEP_IMPACT: Predicted impact (HIGH, MODERATE, LOW, MODIFIER)
+#   • VEP_LoF: Loss-of-function annotation (HC = high confidence)
+#   • VEP_LoF_flags: Flags indicating LoF artifacts (. = no flags)
+#
+# gnomAD v4 annotations:
+#   • fafmax_faf95_max_genomes: Filtering allele frequency (95% CI) in genomes
+#   • nhomalt_genomes: Number of homozygous alternate individuals in genomes
+#
+# Quality metrics:
+#   • sample_gt: Genotype (must be 1/1 for this filter)
+#   • sample_dp: Read depth
+#   • sample_gq: Genotype quality
+#   • sample_vaf: Variant allele frequency
+#
+# ----------------------------------------------------------------------------
+# Use Cases
+# ----------------------------------------------------------------------------
+#
+# Autosomal Recessive Disease:
+#   • Both alleles must carry the variant (1/1)
+#   • Parents are typically heterozygous carriers (0/1)
+#   • Common in consanguineous families
+#
+# Homozygosity Mapping:
+#   • Identify regions of identical-by-descent
+#   • Look for runs of homozygosity (ROH)
+#   • Combine with pedigree data for better results
+#
+# Compound Heterozygotes:
+#   • First pass: Use this config to find 1/1 variants
+#   • Second pass: Use standard config to find 0/1 variants
+#   • Group by gene to identify compound hets
+#
+# ----------------------------------------------------------------------------
+# Customization Tips
+# ----------------------------------------------------------------------------
+#
+# Adjust frequency threshold:
+#   • More variants: fafmax_faf95_max_genomes <= 0.01 (1%)
+#   • Stricter: fafmax_faf95_max_genomes <= 0.0001 (0.01%)
+#
+# Adjust quality thresholds:
+#   • Stricter VAF: sample_vaf_homalt_min: 0.90
+#   • Lower coverage data: sample_dp_min: 8, sample_gq_min: 15
+#
+# Include moderate impact variants:
+#   • Change expression to: (VEP_IMPACT = HIGH | VEP_IMPACT = MODERATE)
+#
+# Add LoF filtering:
+#   • Add to expression: & VEP_LoF = HC & VEP_LoF_flags = .
+#
+# ============================================================================

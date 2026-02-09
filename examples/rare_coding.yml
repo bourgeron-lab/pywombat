@@ -1,0 +1,44 @@
+# ============================================================================
+# PyWombat Configuration: Rare Coding Variants
+# ============================================================================
+#
+# Filters for coding variants (HIGH, MODERATE impact, and synonymous).
+# Useful for comprehensive coding variant analysis including silent changes.
+#
+# Target variants:
+#   • HIGH and MODERATE impact variants
+#   • Synonymous variants (for reference or conservation analysis)
+#   • Pass gnomAD filters with variant-type-specific quality
+#
+# Usage:
+#   uvx pywombat filter input.tsv -F examples/rare_coding.yml -o output
+#   uvx pywombat filter prepared.parquet -F examples/rare_coding.yml -o output
+#
+# ============================================================================
+
+quality:
+  sample_dp_min: 10            # Minimum read depth (coverage)
+  sample_gq_min: 19            # Minimum genotype quality score
+
+  # VAF (variant allele frequency) thresholds ensure proper allelic balance
+  sample_vaf_het_min: 0.25     # Het (0/1): minimum 25% alternate allele
+  sample_vaf_het_max: 0.75     # Het (0/1): maximum 75% to exclude mis-called hom
+  sample_vaf_homalt_min: 0.85  # Hom alt (1/1): minimum 85% alternate allele
+  sample_vaf_hom_ref_max: 0.15 # Hom ref (0/0): maximum 15% alternate allele
+
+  apply_to_parents: false      # Apply same quality filters to parent genotypes
+  filter_no_alt_allele: true   # Exclude 0/0 and ./. genotypes
+
+  # Uncomment to filter for only homozygous alternative 1/1 variants
+  # Useful for recessive disease analysis
+  # homalt_only: false
+
+expression: >
+  VEP_CANONICAL = YES &
+  ((is_snv & AQ > 15) | (is_indel & AQ > 22)) &
+  genomes_filters is_empty &
+  (
+    VEP_IMPACT = HIGH |
+    VEP_IMPACT = MODERATE |
+    (VEP_Consequence contains 'synonymous')
+  )

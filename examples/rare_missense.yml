@@ -1,0 +1,91 @@
+# ============================================================================
+# PyWombat Configuration: Rare Missense Variants with Pathogenicity Scores
+# ============================================================================
+#
+# Filters for rare missense variants using multiple pathogenicity predictors.
+# Combines frequency filtering with computational predictions and clinical annotations.
+#
+# Target variants:
+#   • Missense variants in canonical transcripts
+#   • Ultra-rare frequency (≤0.1% in gnomAD genomes)
+#   • High pathogenicity scores (MPC, REVEL, CADD, etc.)
+#   • ClinVar pathogenic/likely pathogenic annotations
+#
+# Pathogenicity predictors used:
+#   • MPC ≥ 2.6: Missense badness, PolyPhen-2, and constraint
+#   • AlphaMissense ≥ 0.9: DeepMind's ML predictor
+#   • REVEL ≥ 0.773: Ensemble predictor
+#   • CADD v1.7 ≥ 28.3: Combined annotation dependent depletion
+#   • MISTIC ≥ 0.8: Missense tolerance landscape
+#   • popEVE ≤ -4.6: Population evidence of pathogenicity
+#
+# Usage:
+#   uvx pywombat filter input.tsv -F examples/rare_missense.yml -o output
+#   uvx pywombat filter prepared.parquet -F examples/rare_missense.yml -o output
+#
+# ============================================================================
+
+quality:
+  sample_dp_min: 10            # Minimum read depth (coverage)
+  sample_gq_min: 19            # Minimum genotype quality score
+
+  # VAF (variant allele frequency) thresholds ensure proper allelic balance
+  sample_vaf_het_min: 0.25     # Het (0/1): minimum 25% alternate allele
+  sample_vaf_het_max: 0.75     # Het (0/1): maximum 75% to exclude mis-called hom
+  sample_vaf_homalt_min: 0.85  # Hom alt (1/1): minimum 85% alternate allele
+  sample_vaf_hom_ref_max: 0.15 # Hom ref (0/0): maximum 15% alternate allele
+
+  apply_to_parents: false      # Apply same quality filters to parent genotypes
+  filter_no_alt_allele: true   # Exclude 0/0 and ./. genotypes
+
+  # Uncomment to filter for only homozygous alternative 1/1 variants
+  # Useful for recessive disease analysis
+  # homalt_only: false
+
+expression: >
+  VEP_CANONICAL = YES &
+  (VEP_Consequence contains 'missense') &
+  (fafmax_faf95_max_genomes = null | fafmax_faf95_max_genomes <= 0.001) &
+  (
+    (
+      ((is_snv & AQ > 15) | (is_indel & AQ > 22)) &
+      genomes_filters is_empty &
+      (
+        MPC >= 2.6 |
+        am_pathogenecity >= 0.9 |
+        REVEL >= 0.773 |
+        cadd_v1.7 >= 28.3 |
+        MISTIC_pred >= 0.8 |
+        popEVE <= -4.6 |
+        VEP_CLIN_SIG contains 'pathogenic' |
+        VEP_CLIN_SIG contains 'likely_pathogenic'
+      )
+    )
+  )
+
+# ----------------------------------------------------------------------------
+# Required Input Columns
+# ----------------------------------------------------------------------------
+#
+# VEP annotations:
+#   • VEP_CANONICAL: Canonical transcript flag
+#   • VEP_Consequence: Variant consequence (must contain 'missense')
+#   • VEP_CLIN_SIG: ClinVar clinical significance
+#
+# gnomAD v4 annotations:
+#   • fafmax_faf95_max_genomes: Filtering allele frequency
+#   • genomes_filters: Filter status
+#
+# Pathogenicity scores (at least one recommended):
+#   • MPC: Missense badness, PolyPhen-2, and constraint
+#   • am_pathogenecity: AlphaMissense pathogenicity score
+#   • REVEL: Ensemble missense predictor
+#   • cadd_v1.7: CADD v1.7 phred score
+#   • MISTIC_pred: MISTIC prediction
+#   • popEVE: Population-based evidence
+#
+# Quality metrics:
+#   • AQ: Variant quality score
+#   • REF/ALT: For is_snv/is_indel predicates
+#
+# ============================================================================

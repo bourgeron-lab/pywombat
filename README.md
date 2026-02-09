@@ -290,6 +290,50 @@ dnm:
 - **Y in males**: Father must be 0/0, mother N/A
 - **Hemizygous variants**: Require VAF ≥ 85%
 
+### 3. Recessive Disease Analysis (Homozygous Alternative Only)
+
+Filter for only homozygous alternative (1/1) variants in recessive disease studies:
+
+```bash
+wombat filter input.tsv \
+  -F examples/rare_homalt.yml \
+  -o recessive_variants
+
+# With pedigree for trio analysis
+wombat filter input.tsv \
+  --pedigree pedigree.tsv \
+  -F examples/rare_homalt.yml \
+  -o recessive_variants
+```
+
+**Configuration** (`rare_homalt.yml`):
+
+```yaml
+quality:
+  sample_dp_min: 10
+  sample_gq_min: 19
+  sample_vaf_homalt_min: 0.98  # Stringent VAF for true hom calls
+
+  homalt_only: true            # Only keep 1/1 genotypes
+  filter_no_alt_allele: true
+
+expression: "VEP_CANONICAL = YES & VEP_IMPACT = HIGH & (fafmax_faf95_max_genomes = null | fafmax_faf95_max_genomes <= 0.001)"
+```
+
+**What this does:**
+
+- Filters to **only homozygous alternative (1/1)** genotypes
+- Excludes heterozygous (0/1), multi-allelic (2/2, 3/3), and hom ref (0/0)
+- Parents are NOT filtered (they remain heterozygous carriers in recessive inheritance)
+- Ultra-rare frequency (≤0.1% in gnomAD genomes)
+- Canonical transcripts with HIGH impact
+
+**Use cases:**
+- Autosomal recessive disease analysis
+- Homozygosity mapping in consanguineous families
+- Identifying runs of homozygosity (ROH)
+- Compound heterozygote analysis (first pass for 1/1, second for 0/1)
+
 ---
 
 ## Expression-Based Filtering
