@@ -1,0 +1,28 @@
+quality:
+  sample_dp_min: 10 # Minimum read depth (coverage)
+  sample_gq_min: 19 # Minimum genotype quality score
+
+  # VAF (variant allele frequency) thresholds ensure proper allelic balance
+  sample_vaf_het_min: 0.25 # Het (0/1): minimum 25% alternate allele
+  sample_vaf_het_max: 0.75 # Het (0/1): maximum 75% to exclude mis-called hom
+  sample_vaf_homalt_min: 0.85 # Hom alt (1/1): minimum 85% alternate allele
+  sample_vaf_hom_ref_max: 0.15 # Hom ref (0/0): maximum 15% alternate allele
+
+  apply_to_parents: false # Apply same quality filters to parent genotypes
+  filter_no_alt_allele: true # Exclude 0/0 and ./. genotypes
+
+expression: >
+  VEP_CANONICAL = YES &
+  VEP_Consequence contains 'missense' &
+  (fafmax_faf95_max_genomes = null | fafmax_faf95_max_genomes <= 0.001) &
+  (
+    ((is_snv & AQ > 15) | (is_indel & AQ > 22)) &
+    genomes_filters is_empty &
+    (
+      (MPC not_empty & MPC >= 2.6) |
+      (REVEL not_empty & REVEL >= 0.932) |
+      (popEVE not_empty & popEVE <= -4.6) |
+    ) &
+    (cadd_v1.7 is_empty | cadd_v1.7 >= 20) &
+    (am_pathogenicity is_empty | am_pathogenicity >= 0.56)
+  )

@@ -69,10 +69,7 @@ expression: >
       ((is_snv & AQ > 15) | (is_indel & AQ > 22)) &
       genomes_filters is_empty
     ) |
-    (
-      VEP_CLIN_SIG contains 'pathogenic' | 
-      VEP_CLIN_SIG contains 'likely_pathogenic'
-    )
+    (VEP_CLIN_SIG contains 'pathogenic')
   )
 
 # ----------------------------------------------------------------------------
