@@ -3,7 +3,7 @@
 import polars as pl
 from click.testing import CliRunner
 
-from pywombat.cli import cli
+from pywombat.cli import cli, apply_filters_lazy
 
 
 class TestFilterCommand:
@@ -318,3 +318,66 @@ class TestDNMOptimization:
             f"Expected 2 rows with skip_prefilters=True, got {result_skip.shape[0]}"
         assert result_no_skip.shape[0] == 1, \
             f"Expected 1 row with skip_prefilters=False, got {result_no_skip.shape[0]}"
+
+
+class TestHomaltFilter:
+    """Test homalt_only quality filter."""
+
+    def test_homalt_only_filter_excludes_heterozygous(self):
+        """Test that homalt_only=true excludes heterozygous (0/1) variants."""
+        # Create test data with mixed genotypes
+        test_data = pl.DataFrame({
+            "#CHROM": ["chr1", "chr1", "chr1", "chr1"],
+            "POS": [100, 200, 300, 400],
+            "REF": ["A", "C", "G", "T"],
+            "ALT": ["G", "T", "A", "C"],
+            "sample_gt": ["1/1", "0/1", "1/1", "0/0"],
+            "sample_dp": [20, 20, 20, 20],
+            "sample_gq": [30, 30, 30, 30],
+            "sample_vaf": [0.98, 0.50, 0.99, 0.02],
+        })
+
+        # Apply homalt_only filter using lazy path
+        result = apply_filters_lazy(
+            test_data.lazy(),
+            {"quality": {"homalt_only": True}},
+            verbose=False,
+            pedigree_df=None
+        ).collect()
+
+        # Should only keep variants with 1/1 genotypes
+        assert result.shape[0] == 2, \
+            f"Expected 2 variants (1/1 only), got {result.shape[0]}"
+        assert all(gt == "1/1" for gt in result["sample_gt"]), \
+            "All genotypes should be 1/1"
+        assert set(result["POS"].to_list()) == {100, 300}, \
+            "Should keep positions 100 and 300 only"
+
+    def test_homalt_only_with_quality_filters(self):
+        """Test homalt_only combined with other quality filters."""
+        test_data = pl.DataFrame({
+            "#CHROM": ["chr1", "chr1", "chr1", "chr1"],
+            "POS": [100, 200, 300, 400],
+            "REF": ["A", "C", "G", "T"],
+            "ALT": ["G", "T", "A", "C"],
+            "sample_gt": ["1/1", "1/1", "1/1", "0/1"],
+            "sample_dp": [5, 15, 20, 25],  # Low depth for pos 100
+            "sample_gq": [30, 30, 30, 30],
+            "sample_vaf": [0.98, 0.99, 0.98, 0.50],
+        })
+
+        # Apply homalt_only with minimum depth filter
+        result = apply_filters_lazy(
+            test_data.lazy(),
+            {"quality": {"homalt_only": True, "sample_dp_min": 10}},
+            verbose=False,
+            pedigree_df=None
+        ).collect()
+
+        # Should keep only 1/1 with dp >= 10
+        assert result.shape[0] == 2, \
+            f"Expected 2 variants (1/1 and dp >= 10), got {result.shape[0]}"
+        assert set(result["POS"].to_list()) == {200, 300}, \
+            "Should keep positions 200 and 300 only"
+        assert all(gt == "1/1" for gt in result["sample_gt"]), \
+            "All genotypes should be 1/1"

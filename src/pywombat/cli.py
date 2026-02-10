@@ -2651,6 +2651,11 @@ def apply_filters_lazy(
                 | pl.col("sample_gt").str.contains("2")
             )
 
+        # Filter: keep only homozygous alternative 1/1 genotypes
+        homalt_only = quality_config.get("homalt_only", False)
+        if homalt_only:
+            lazy_df = lazy_df.filter(pl.col("sample_gt") == "1/1")
+
         # Apply minimum depth filter
         if "sample_dp_min" in quality_config:
             min_dp = quality_config["sample_dp_min"]
