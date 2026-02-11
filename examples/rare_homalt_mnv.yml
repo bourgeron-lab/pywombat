@@ -74,6 +74,11 @@ mnv:
   # as the original variant. Requires internet access.
   annotate: true
 
+  # Keep only MNV candidates in the output (default: false)
+  # When true, removes all variants without an mnv_proba value,
+  # keeping only SNV and indel MNV candidates
+  # only: false
+
   # Window size for indel clustering (default: 10)
   # Indels within this distance are checked for combined frame effects
   indel_window: 10

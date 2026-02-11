@@ -463,6 +463,7 @@ mnv:
   candidate: true      # Enable MNV candidate detection
   indel_window: 10     # Window size for indel clustering (default: 10)
   annotate: true       # Re-annotate MNV candidates via Ensembl VEP REST API
+  only: false          # Set to true to keep only MNV candidates in output
   # annotate_timeout: 30      # HTTP timeout for VEP API requests (default: 30s)
   # annotate_batch_size: 200  # Max variants per VEP API batch (default/max: 200)
 ```

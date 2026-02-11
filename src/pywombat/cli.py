@@ -652,6 +652,16 @@ def filter_cmd(
                     timeout=mnv_config.get("annotate_timeout", 30),
                 )
 
+            # Filter to MNV-only if configured
+            if mnv_config.get("only", False):
+                before_count = df.shape[0]
+                df = df.filter(pl.col("mnv_proba").is_not_null())
+                if verbose:
+                    click.echo(
+                        f"  MNV-only filter: {before_count} → {df.shape[0]} variants",
+                        err=True,
+                    )
+
             # Convert back to lazy for consistent output handling
             lazy_df = df.lazy()
 

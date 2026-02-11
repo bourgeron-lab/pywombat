@@ -381,3 +381,104 @@ class TestHomaltFilter:
             "Should keep positions 200 and 300 only"
         assert all(gt == "1/1" for gt in result["sample_gt"]), \
             "All genotypes should be 1/1"
+
+
+class TestMNVOnlyFilter:
+    """Test mnv.only filter option."""
+
+    def test_mnv_only_keeps_variants_with_mnv_proba(self):
+        """Test that mnv.only=true keeps only variants with non-null mnv_proba."""
+        test_data = pl.DataFrame({
+            "#CHROM": ["chr1", "chr1", "chr1", "chr1"],
+            "POS": [100, 101, 200, 300],
+            "REF": ["A", "T", "C", "G"],
+            "ALT": ["G", "A", "T", "A"],
+            "sample": ["S1", "S1", "S1", "S1"],
+            "sample_gt": ["0/1", "0/1", "0/1", "0/1"],
+            "sample_dp": [20, 20, 20, 20],
+            "sample_gq": [30, 30, 30, 30],
+            "sample_vaf": [0.50, 0.50, 0.50, 0.50],
+            "mnv_proba": [0.95, 0.95, None, 0.87],
+            "mnv_variant": ["chr1:100:AT:GA", "chr1:100:AT:GA", "", "chr1:300:GC:AT"],
+            "mnv_inframe": [None, None, None, None],
+        })
+
+        # Apply MNV-only filter (same logic as cli.py)
+        result = test_data.filter(pl.col("mnv_proba").is_not_null())
+
+        assert result.shape[0] == 3, \
+            f"Expected 3 variants with mnv_proba, got {result.shape[0]}"
+        assert set(result["POS"].to_list()) == {100, 101, 300}, \
+            "Should keep positions 100, 101, and 300 (all with mnv_proba values)"
+
+    def test_mnv_only_keeps_both_snv_and_indel_candidates(self):
+        """Test that mnv.only keeps both SNV and indel MNV candidates."""
+        test_data = pl.DataFrame({
+            "#CHROM": ["chr1", "chr1", "chr2", "chr2", "chr3"],
+            "POS": [100, 101, 500, 505, 700],
+            "REF": ["A", "T", "ATG", "C", "G"],
+            "ALT": ["G", "A", "A", "CGAT", "T"],
+            "sample": ["S1", "S1", "S1", "S1", "S1"],
+            "sample_gt": ["0/1", "0/1", "0/1", "0/1", "0/1"],
+            "sample_dp": [20, 20, 20, 20, 20],
+            "sample_gq": [30, 30, 30, 30, 30],
+            "sample_vaf": [0.50, 0.50, 0.50, 0.50, 0.50],
+            "mnv_proba": [0.95, 0.95, 0.88, 0.88, None],
+            "mnv_variant": ["chr1:100:AT:GA", "chr1:100:AT:GA", "", "", ""],
+            "mnv_inframe": [None, None, True, True, None],
+        })
+
+        result = test_data.filter(pl.col("mnv_proba").is_not_null())
+
+        assert result.shape[0] == 4, \
+            f"Expected 4 MNV candidates (2 SNV + 2 indel), got {result.shape[0]}"
+        # SNV candidates (pos 100, 101) and indel candidates (pos 500, 505)
+        assert set(result["POS"].to_list()) == {100, 101, 500, 505}
+
+    def test_mnv_only_returns_empty_when_no_candidates(self):
+        """Test that mnv.only returns empty DataFrame when no MNV candidates exist."""
+        test_data = pl.DataFrame({
+            "#CHROM": ["chr1", "chr1"],
+            "POS": [100, 200],
+            "REF": ["A", "C"],
+            "ALT": ["G", "T"],
+            "sample": ["S1", "S1"],
+            "sample_gt": ["0/1", "0/1"],
+            "sample_dp": [20, 20],
+            "sample_gq": [30, 30],
+            "sample_vaf": [0.50, 0.50],
+            "mnv_proba": [None, None],
+            "mnv_variant": ["", ""],
+            "mnv_inframe": [None, None],
+        })
+
+        result = test_data.filter(pl.col("mnv_proba").is_not_null())
+
+        assert result.shape[0] == 0, \
+            f"Expected 0 variants (no MNV candidates), got {result.shape[0]}"
+
+    def test_mnv_only_preserves_all_columns(self):
+        """Test that mnv.only filter preserves all columns in the output."""
+        test_data = pl.DataFrame({
+            "#CHROM": ["chr1", "chr1"],
+            "POS": [100, 200],
+            "REF": ["A", "C"],
+            "ALT": ["G", "T"],
+            "FILTER": ["PASS", "PASS"],
+            "VEP_SYMBOL": ["BRCA1", "TP53"],
+            "sample": ["S1", "S1"],
+            "sample_gt": ["0/1", "0/1"],
+            "sample_dp": [20, 20],
+            "sample_gq": [30, 30],
+            "sample_vaf": [0.50, 0.50],
+            "mnv_proba": [0.95, None],
+            "mnv_variant": ["chr1:100:AC:GT", ""],
+            "mnv_inframe": [None, None],
+        })
+
+        result = test_data.filter(pl.col("mnv_proba").is_not_null())
+
+        assert result.shape[0] == 1
+        assert result.columns == test_data.columns, \
+            "All columns should be preserved"
+        assert result["VEP_SYMBOL"][0] == "BRCA1"

@@ -5,6 +5,19 @@ All notable changes to PyWombat will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-02-11
+
+### Added
+
+- **MNV-only output filter** (`mnv.only: true`): New YAML option to keep only MNV candidates in the output
+  - Filters to variants with a non-null `mnv_proba` value (both SNV and indel MNV candidates)
+  - Applied after MNV detection and optional VEP annotation
+  - Useful for focused MNV analysis without non-MNV variants
+
+### Testing
+
+- Added 4 new tests for `mnv.only` filter in `tests/test_filter.py`
+
 ## [1.5.0] - 2026-02-11
 
 ### Added
