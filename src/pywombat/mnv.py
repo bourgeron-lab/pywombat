@@ -7,9 +7,16 @@ This module provides functionality to detect MNV candidates by:
 4. Determining inframe status for indel clusters
 """
 
+from __future__ import annotations
+
 import numpy as np
 import polars as pl
 from scipy.stats import norm
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import cyvcf2
+    import pysam
 
 try:
     import cyvcf2
