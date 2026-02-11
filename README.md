@@ -16,6 +16,8 @@ A high-performance CLI tool for processing and filtering bcftools tabulated TSV 
 - 🏷️ **Boolean Flag Support**: INFO field flags (PASS, DB, etc.) extracted as True/False columns
 - ⚡ **Memory Optimized**: Two-step workflow for large files (prepare → filter)
 - 💾 **Parquet Support**: Pre-process large files for repeated, memory-efficient analysis
+- 🔎 **VEP Annotation**: Query Ensembl VEP REST API for individual variants or MNV candidates
+- 🧩 **MNV Annotation**: Automatic re-annotation of MNV candidates via VEP with transcript matching
 
 ---
 
@@ -115,7 +117,7 @@ chr1    100  A    T    2   0.5  30  true  Sample2  1/1        18         99     
 
 ## Commands
 
-PyWombat has two main commands:
+PyWombat has three main commands:
 
 ### `wombat prepare` - Preprocess Large Files
 
@@ -170,6 +172,29 @@ wombat filter input.tsv -o output -f parquet
 # With verbose output
 wombat filter input.tsv -o output -v
 ```
+
+### `wombat vep` - Annotate a Variant via Ensembl VEP
+
+Query the Ensembl VEP REST API for a single variant on GRCh38:
+
+```bash
+# Annotate a variant (shows canonical transcript only)
+wombat vep chr1:151776102:GC:AA
+
+# Show all transcripts
+wombat vep chr1:151776102:GC:AA --all
+
+# With verbose output
+wombat vep chr17:43094464:G:A -v
+```
+
+**What it does:**
+- Queries the Ensembl VEP REST API (GRCh38) with LOFTEE annotations
+- Displays transcript-level annotations: gene symbol, consequence, impact, SIFT, PolyPhen, LOFTEE
+- By default shows only the canonical transcript; use `--all` for all transcripts
+- Supports SNVs, indels, and MNVs in `chr:pos:ref:alt` format
+
+**Variant format**: `chrN:POS:REF:ALT` (e.g., `chr1:151776102:GC:AA`, `chr17:43094464:G:A`)
 
 ### With Pedigree (Trio/Family Analysis)
 
@@ -396,6 +421,188 @@ expression: "VEP_CLIN_SIG not_empty & genomes_filters is_empty"
 # Column names with dots are supported
 expression: "cadd_v1.7 >= 28.3 & REVEL not_empty"
 ```
+
+---
+
+## MNV Detection (Multi-Nucleotide Variants)
+
+PyWombat can detect MNV candidates - cases where multiple nearby variants on the same haplotype may combine to create a different functional effect than the individual variants alone.
+
+### What are MNVs?
+
+Multi-nucleotide variants occur when two or more nearby variants are inherited together on the same chromosome (in cis). These compound variants can have significantly different functional consequences:
+
+- **SNV pairs**: Two SNVs within 2bp may form a di-nucleotide substitution with different protein impact
+- **Indel clusters**: Multiple indels that may restore or maintain reading frame
+- **Functional impact**: Combined variants may be synonymous when individual variants are missense, or vice versa
+
+### Use Cases
+
+1. **Di-nucleotide Substitutions**:
+   - Individual: chr1:100:A:T (missense) + chr1:101:G:C (missense)
+   - Combined MNV: chr1:100:AG:TC (may be synonymous!)
+   - Impact: Completely different functional prediction
+
+2. **Separated SNV Pairs**:
+   - Individual: chr1:200:C:T (missense) + chr1:202:G:A (missense)
+   - Combined MNV: chr1:200:CCG:TCA (different codon change)
+   - Impact: May affect protein structure differently
+
+3. **Frameshift Restoration** (or lack thereof):
+   - Indel1: chr2:500:ATG:A (-2bp frameshift)
+   - Indel2: chr2:505:C:CGAT (+3bp frameshift)
+   - Combined: -2+3 = +1bp (still frameshift, not rescued)
+   - Impact: Understanding combined effect
+
+### Configuration
+
+Enable MNV detection by adding the `mnv` section to your filter config:
+
+```yaml
+mnv:
+  candidate: true      # Enable MNV candidate detection
+  indel_window: 10     # Window size for indel clustering (default: 10)
+  annotate: true       # Re-annotate MNV candidates via Ensembl VEP REST API
+  # annotate_timeout: 30      # HTTP timeout for VEP API requests (default: 30s)
+  # annotate_batch_size: 200  # Max variants per VEP API batch (default/max: 200)
+```
+
+### Required Command-Line Options
+
+MNV detection requires two additional files:
+
+```bash
+wombat filter variants.parquet \
+  -F config_with_mnv.yml \
+  --bcf cohort.bcf \      # Tabix-indexed BCF file (same as input source)
+  --fasta GRCh38.fa \     # Indexed FASTA reference genome
+  -o output.tsv
+```
+
+**Files needed**:
+- `--bcf`: Tabix-indexed BCF file (`.bcf.csi` or `.bcf.tbi` index must exist)
+- `--fasta`: Indexed FASTA reference (`.fai` index must exist)
+
+### Installation
+
+MNV detection requires additional dependencies:
+
+```bash
+# Install with MNV support
+pip install pywombat[mnv]
+
+# Or with uv
+uv pip install pywombat[mnv]
+```
+
+**Dependencies added**: `cyvcf2`, `pysam`, `scipy`
+
+### Output Columns
+
+Three new columns are added to the output:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `mnv_proba` | float or null | Phasing probability (0.0-1.0) indicating confidence that variants are in-phase. Higher values = stronger evidence. |
+| `mnv_inframe` | bool or null | For indels only: `True` if combined indels maintain reading frame (net length is multiple of 3). |
+| `mnv_variant` | string | For SNVs only: Reconstructed variant notation (chr:pos:ref:alt) for re-annotation. |
+
+### Example Output
+
+```
+#CHROM  POS  REF  ALT  sample  mnv_proba  mnv_inframe  mnv_variant
+chr1    100  A    T    S001    0.95          null          chr1:100:AGC:TGC
+chr1    102  G    C    S001    0.95          null          chr1:100:AGC:TGC
+chr2    500  ATG  A    S002    0.88          true
+chr2    505  C    CGAT S002    0.88          true
+chr3    200  A    T    S003    null          null
+```
+
+**Interpretation**:
+- chr1:100-102 (S001): Two SNVs with 95% probability of being in-phase → likely MNV
+- chr2:500-505 (S002): Two indels with 88% probability, combined are inframe
+- chr3:200 (S003): No nearby variants found → not an MNV candidate
+
+### Detection Logic
+
+**For SNVs** (single nucleotide variants):
+1. Search window: pos-2 to pos+2 (5bp total)
+2. Find other SNVs carried by the same sample
+3. Calculate phasing probability using allelic depth (AD) values
+4. Reconstruct combined variant notation using reference genome
+5. Output: `mnv_proba` (probability), `mnv_variant` (notation)
+
+**For INDELs** (insertions/deletions):
+1. Calculate indel length: `abs(len(REF) - len(ALT))`
+2. Search window: `pos-indel_window` to `pos+length+indel_window`
+3. Find other indels carried by the same sample
+4. Calculate phasing probability using AD values
+5. Sum net lengths to determine if inframe (multiple of 3)
+6. Output: `mnv_proba` (probability), `mnv_inframe` (bool)
+
+**Phasing Probability Calculation**:
+- Compares allelic depth (AD) patterns between variants
+- **In-phase (cis)**: AD values similar (ref1≈ref2, alt1≈alt2)
+- **Out-of-phase (trans)**: AD values swapped (ref1≈alt2, alt1≈ref2)
+- Uses Gaussian model to calculate `P(in-phase) / P(total)`
+- Values close to 1.0 = high confidence in-phase
+- Values close to 0.0 = likely out-of-phase
+
+### Example Configuration
+
+See [examples/rare_homalt_mnv.yml](examples/rare_homalt_mnv.yml) for a complete example with:
+- Quality filters for homozygous alternative variants
+- Expression filters for rare, high-impact variants
+- MNV detection enabled with detailed comments
+- Usage examples and customization tips
+
+### Automatic MNV Annotation via VEP
+
+When `annotate: true` is set in the MNV config, PyWombat automatically:
+
+1. Identifies SNV-based MNV candidates (rows with non-empty `mnv_variant`)
+2. Queries the Ensembl VEP REST API in batches (up to 200 variants per request)
+3. Matches the VEP response to the same transcript (`VEP_Feature`) as the original variant
+4. Appends new rows to the output with the MNV's VEP annotation
+
+**New rows have:**
+- `#CHROM`, `POS`, `REF`, `ALT` from the reconstructed MNV variant
+- Sample columns (`sample_gt`, `sample_dp`, etc.) copied from the original row
+- Parent columns set to null
+- `mnv_proba` set to `1 - original_value` (complement)
+- `VEP_*` columns populated from the VEP API response
+
+This allows direct comparison of individual vs. combined variant annotations in a single output file.
+
+**Note**: Requires internet access to reach the Ensembl REST API. Only SNV-based MNVs are annotated (indel MNVs produce `mnv_inframe` but no reconstructed variant).
+
+### Downstream Analysis
+
+**Filter by phasing confidence**:
+```bash
+# Keep only high-confidence MNV candidates
+awk '$mnv_proba > 0.8 || $mnv_proba == ""' output.tsv > high_conf_mnvs.tsv
+```
+
+**Identify rescued frameshifts**:
+```bash
+# Find indel pairs that restore reading frame
+awk '$mnv_inframe == "true"' output.tsv > rescued_frameshifts.tsv
+```
+
+### Limitations
+
+- Requires original BCF and reference FASTA files
+- SNV window is fixed at 2bp (based on typical codon spacing)
+- Indel window is configurable (default: 10bp)
+- Phasing probability is statistical estimate, not definitive proof
+- True phasing validation requires read-level analysis (future: `validate: true`)
+
+### Future Features (Planned)
+
+- `validate: true` - Validate phasing using CRAM/BAM read alignments
+- Configurable SNV window size
+- Multi-sample MNV detection (family-based)
 
 ---
 
@@ -709,10 +916,13 @@ uv run pytest
 pywombat/
 ├── src/pywombat/
 │   ├── __init__.py
-│   └── cli.py           # Main CLI implementation
+│   ├── cli.py           # Main CLI implementation
+│   ├── mnv.py           # MNV detection module (optional)
+│   └── vep.py           # VEP annotation tools
 ├── examples/            # Configuration examples
 │   ├── README.md
 │   ├── rare_variants_high_impact.yml
+│   ├── rare_homalt_mnv.yml
 │   └── de_novo_mutations.yml
 ├── tests/               # Test files and data
 ├── pyproject.toml       # Project metadata

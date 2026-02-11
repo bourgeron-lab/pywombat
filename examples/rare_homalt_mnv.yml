@@ -1,0 +1,219 @@
+# ============================================================================
+# PyWombat Configuration: Rare Homozygous Alternative with MNV Detection
+# ============================================================================
+#
+# Filters for homozygous alternative variants with MNV candidate detection.
+# This example shows how to enable MNV detection for recessive disease analysis.
+# Useful for identifying compound MNVs that may alter functional interpretation.
+#
+# Target variants:
+#   • Autosomal recessive disease analysis
+#   • Homozygosity mapping with MNV awareness
+#   • Compound MNVs that may affect protein function differently
+#
+# Usage:
+#   uvx pywombat filter input.parquet \
+#     -F examples/rare_homalt_mnv.yml \
+#     --bcf data/variants.bcf \
+#     --fasta /path/to/genome.fa \
+#     -o output.tsv
+#
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Quality Filters
+# ----------------------------------------------------------------------------
+# Ensures high-confidence homozygous alternative calls
+
+quality:
+  sample_dp_min: 10 # Minimum read depth (coverage)
+  sample_gq_min: 19 # Minimum genotype quality score
+
+  # VAF threshold for homozygous alternative (1/1)
+  # High threshold ensures true homozygous calls
+  sample_vaf_homalt_min: 0.98 # At least 98% alternate allele
+
+  # Keep only homozygous alternative 1/1 genotypes
+  # This is the KEY setting for recessive analysis
+  homalt_only: true
+
+  filter_no_alt_allele: true
+
+# ----------------------------------------------------------------------------
+# Expression Filter
+# ----------------------------------------------------------------------------
+# Multi-criteria filter for rare, high-impact variants
+
+expression: >
+  VEP_CANONICAL = YES &
+  VEP_IMPACT = HIGH &
+  VEP_LoF = HC &
+  VEP_LoF_flags = . &
+  (fafmax_faf95_max_genomes = null | fafmax_faf95_max_genomes <= 0.01) &
+  (nhomalt_genomes = null | nhomalt_genomes <= 10) &
+  (
+    (
+      ((is_snv & AQ > 15) | (is_indel & AQ > 22)) &
+      genomes_filters is_empty
+    )
+  )
+
+# ----------------------------------------------------------------------------
+# MNV Detection Configuration
+# ----------------------------------------------------------------------------
+
+mnv:
+  # Enable MNV candidate detection
+  # Set to true to detect multi-nucleotide variants
+  candidate: true
+
+  # Re-annotate reconstructed MNV variants via Ensembl VEP REST API.
+  # When enabled, SNV-based MNV candidates (those with a non-empty mnv_variant)
+  # are sent to VEP for annotation. New rows are appended to the output with
+  # the MNV variant's VEP annotation, matching the same transcript (VEP_Feature)
+  # as the original variant. Requires internet access.
+  annotate: true
+
+  # Window size for indel clustering (default: 10)
+  # Indels within this distance are checked for combined frame effects
+  indel_window: 10
+
+  # Optional: HTTP timeout for VEP API requests (default: 30 seconds)
+  # annotate_timeout: 30
+
+  # Optional: Max variants per VEP API batch (default: 200, max: 200)
+  # annotate_batch_size: 200
+
+  # Future options (not yet implemented):
+  # validate: false      # Validate phasing using CRAM alignments
+
+# ----------------------------------------------------------------------------
+# Output Columns Added by MNV Detection
+# ----------------------------------------------------------------------------
+#
+# mnv_proba: float or null
+#   - For SNVs: Phasing probability (0.0-1.0) if paired SNV found
+#   - For indels: Phasing probability if paired indels found
+#   - null if no nearby variant detected
+#   - Higher values indicate stronger evidence for in-phase variants
+#
+# mnv_inframe: bool or null
+#   - For indels only: True if combined indels maintain reading frame
+#   - For SNVs: null (not applicable)
+#   - True = net indel length is multiple of 3 (inframe)
+#   - False = net indel length is not multiple of 3 (frameshift)
+#
+# mnv_variant: str
+#   - For SNVs: Reconstructed variant notation (chr:pos:ref:alt)
+#   - For indels: Empty string
+#   - Example: "chr1:100:AGC:TGC" for combined SNVs at pos 100 and 102
+#   - Use this notation to re-annotate MNV for functional prediction
+#
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Required Command-Line Options
+# ----------------------------------------------------------------------------
+#
+# --bcf: Path to tabix-indexed BCF file
+#   Must be the same file used to generate the input TSV
+#   Index file (.bcf.csi or .bcf.tbi) must exist in same directory
+#   Used to query variants in windows around each candidate
+#
+# --fasta: Path to indexed FASTA reference genome
+#   Must match the reference used for variant calling
+#   Index file (.fai) must exist in same directory
+#   Used to fill gaps when reconstructing MNV notation
+#
+# Example:
+#   uvx pywombat filter variants.parquet \
+#     -F rare_homalt_mnv.yml \
+#     --bcf cohort.bcf \
+#     --fasta GRCh38.fa \
+#     -o filtered_with_mnv.tsv -v
+#
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# MNV Detection Logic
+# ----------------------------------------------------------------------------
+#
+# For SNVs (single nucleotide variants):
+#   1. Look for other SNVs within 2bp window (pos-2 to pos+2)
+#   2. Check if other variants carried by same sample
+#   3. Calculate phasing probability using allelic depth (AD) values
+#   4. Reconstruct combined variant notation using reference genome
+#   5. Output: mnv_proba (probability), mnv_variant (notation)
+#
+# For INDELs (insertions/deletions):
+#   1. Calculate indel length: abs(len(REF) - len(ALT))
+#   2. Look for other indels in window: pos-window to pos+length+window
+#   3. Check if other indels carried by same sample
+#   4. Calculate phasing probability using AD values
+#   5. Sum net lengths to determine if inframe (multiple of 3)
+#   6. Output: mnv_proba (probability), mnv_inframe (bool)
+#
+# Phasing Probability:
+#   - Compares allelic depth (AD) patterns between variants
+#   - In-phase (cis): AD values similar (ref1≈ref2, alt1≈alt2)
+#   - Out-of-phase (trans): AD values swapped (ref1≈alt2, alt1≈ref2)
+#   - Uses Gaussian model to calculate P(in-phase) / P(total)
+#   - Values close to 1.0 = high confidence in-phase
+#   - Values close to 0.0 = likely out-of-phase
+#
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Use Cases
+# ----------------------------------------------------------------------------
+#
+# 1. Di-nucleotide Substitutions:
+#    SNV1: chr1:100:A:T (missense)
+#    SNV2: chr1:101:G:C (missense)
+#    MNV:  chr1:100:AG:TC (may be synonymous!)
+#    → Functional impact may differ significantly
+#
+# 2. Separated SNV Pairs:
+#    SNV1: chr1:200:C:T (missense, codon ACG→ATG)
+#    SNV2: chr1:202:G:A (missense, codon ACG→ACA)
+#    MNV:  chr1:200:CCG:TCA (codon change may differ)
+#    → Combined effect on protein structure
+#
+# 3. Frameshift Restoration:
+#    Indel1: chr2:500:ATG:A (-2bp frameshift)
+#    Indel2: chr2:505:C:CGAT (+3bp frameshift)
+#    Combined: -2+3 = +1bp (still frameshift, not rescued)
+#    → mnv_inframe = False
+#
+# 4. Inframe Compound Indels:
+#    Indel1: chr3:1000:GGG:G (-2bp)
+#    Indel2: chr3:1005:T:TATC (+3bp)
+#    Indel3: chr3:1010:CAT:C (-2bp)
+#    Combined: -2+3-2 = -1bp (frameshift!)
+#    → mnv_inframe = False
+#
+#    BUT if only Indel1+Indel2: -2+3 = +1bp (frameshift)
+#    → Check which indels are actually linked
+#
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Customization Tips
+# ----------------------------------------------------------------------------
+#
+# Adjust indel window size:
+#   • Larger window: indel_window: 20 (finds more distant indels)
+#   • Smaller window: indel_window: 5 (stricter clustering)
+#
+# Adjust quality thresholds:
+#   • Stricter VAF: sample_vaf_homalt_min: 0.95
+#   • Lower coverage: sample_dp_min: 8, sample_gq_min: 15
+#
+# Adjust frequency threshold:
+#   • More variants: fafmax_faf95_max_genomes <= 0.05 (5%)
+#   • Stricter: fafmax_faf95_max_genomes <= 0.001 (0.1%)
+#
+# Include moderate impact variants:
+#   • Change expression to: (VEP_IMPACT = HIGH | VEP_IMPACT = MODERATE)
+#
+# ============================================================================

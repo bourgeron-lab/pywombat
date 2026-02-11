@@ -5,6 +5,50 @@ All notable changes to PyWombat will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-02-11
+
+### Added
+
+- **VEP Annotation CLI** (`wombat vep`): New command to query the Ensembl VEP REST API for individual variants
+  - Accepts variant format `chr:pos:ref:alt` (e.g., `chr17:43094464:G:A`)
+  - Annotates on GRCh38 with LOFTEE support (LoF, LoF_filter, LoF_flags, LoF_info)
+  - Shows canonical transcript by default; use `--all` for all transcripts
+  - Displays gene symbol, consequence, impact, SIFT, PolyPhen, and LOFTEE annotations
+
+- **MNV VEP Annotation** (`mnv.annotate: true`): Automatic re-annotation of MNV candidates via VEP
+  - When enabled in YAML config, queries VEP for SNV-based MNV candidates (`mnv_variant` column)
+  - Matches VEP response to the same transcript (`VEP_Feature`) as the original variant
+  - Appends new annotated rows to the output with MNV variant coordinates
+  - Batches API calls (up to 200 per request) with configurable timeout
+  - Non-fatal error handling: API failures produce warnings, not aborts
+
+- **New VEP Module** (`src/pywombat/vep.py`):
+  - `parse_variant()` - Parses `chr:pos:ref:alt` variant strings
+  - `query_vep()` - Queries VEP REST API with batching support
+  - `extract_annotations()` - Extracts transcript annotations from VEP responses
+  - `format_annotations()` - Formats annotations for CLI display
+  - `annotate_mnv_variants()` - Annotates MNV candidates in DataFrames
+  - `VEP_COLUMN_MAPPING` - Maps VEP API keys to DataFrame column names
+
+### Changed
+
+- **Renamed `mnv_candidate` to `mnv_proba`**: The MNV phasing probability column has been renamed for clarity
+  - Updated across all source files, tests, examples, and documentation
+  - The column now consistently represents the phasing probability (0.0-1.0)
+
+### Testing
+
+- Added 61 new tests in `tests/test_vep.py`:
+  - `TestParseVariant` (12 tests) - Variant string parsing
+  - `TestFormatVariantForVep` (3 tests) - VEP API format conversion
+  - `TestExtractAnnotations` (8 tests) - VEP response extraction
+  - `TestFormatAnnotations` (6 tests) - CLI display formatting
+  - `TestQueryVep` (5 tests) - API querying with mocked responses
+  - `TestVepCLICommand` (6 tests) - CLI integration
+  - `TestVepColumnMapping` (2 tests) - Column mapping validation
+  - `TestFindTranscriptAnnotation` (4 tests) - Transcript matching
+  - `TestAnnotateMnvVariants` (15 tests) - MNV annotation pipeline
+
 ## [1.2.1] - 2026-02-05
 
 ### Fixed

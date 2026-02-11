@@ -20,6 +20,7 @@ def cli():
     Commands:
         filter   Process and filter variant data
         prepare  Convert TSV to optimized Parquet format
+        vep      Annotate variant using Ensembl VEP REST API
     """
     pass
 
@@ -403,6 +404,18 @@ def process_dnm_by_chromosome(
     type=str,
     help="Debug mode: show rows matching chrom:pos (e.g., chr11:70486013).",
 )
+@click.option(
+    "--bcf",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Path to tabix-indexed BCF file for MNV detection.",
+)
+@click.option(
+    "--fasta",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Path to indexed FASTA reference for MNV reconstruction.",
+)
 def filter_cmd(
     input_file: Path,
     output: Optional[str],
@@ -411,6 +424,8 @@ def filter_cmd(
     pedigree: Optional[Path],
     filter_config: Optional[Path],
     debug: Optional[str],
+    bcf: Optional[Path],
+    fasta: Optional[Path],
 ):
     """
     Process and filter variant data from TSV or Parquet files.
@@ -594,6 +609,51 @@ def filter_cmd(
             lazy_df = apply_filters_lazy(
                 lazy_df, filter_config_data, verbose, pedigree_df
             )
+
+        # Apply MNV detection if configured
+        mnv_config = filter_config_data.get("mnv", {}) if filter_config_data else {}
+        if mnv_config.get("candidate", False):
+            if bcf is None:
+                raise click.UsageError(
+                    "MNV detection requires --bcf option. "
+                    "Provide path to tabix-indexed BCF file."
+                )
+            if fasta is None:
+                raise click.UsageError(
+                    "MNV detection requires --fasta option. "
+                    "Provide path to indexed FASTA reference."
+                )
+
+            if verbose:
+                click.echo("Detecting MNV candidates...", err=True)
+
+            # Import here to avoid requiring dependencies if not used
+            from pywombat.mnv import detect_mnv_probas
+
+            # Collect DataFrame for MNV processing
+            df = lazy_df.collect()
+            df = detect_mnv_probas(df, str(bcf), str(fasta), mnv_config)
+
+            if verbose:
+                n_candidates = df.filter(pl.col("mnv_proba").is_not_null()).shape[0]
+                click.echo(f"  Found {n_candidates} MNV candidates", err=True)
+
+            # VEP annotation of MNV candidates
+            if mnv_config.get("annotate", False):
+                if verbose:
+                    click.echo("Annotating MNV candidates via VEP API...", err=True)
+
+                from pywombat.vep import annotate_mnv_variants
+
+                df = annotate_mnv_variants(
+                    df,
+                    verbose=verbose,
+                    batch_size=mnv_config.get("annotate_batch_size", 200),
+                    timeout=mnv_config.get("annotate_timeout", 30),
+                )
+
+            # Convert back to lazy for consistent output handling
+            lazy_df = df.lazy()
 
         # Write output
         output_path = Path(f"{output}.{output_format}")
@@ -2759,6 +2819,60 @@ def apply_filters_lazy(
         lazy_df = df.lazy().filter(filter_expr)
 
     return lazy_df
+
+
+@cli.command("vep")
+@click.argument("variant", type=str)
+@click.option(
+    "--all",
+    "show_all",
+    is_flag=True,
+    default=False,
+    help="Show all transcripts instead of only canonical.",
+)
+@click.option("-v", "--verbose", is_flag=True, help="Enable verbose output.")
+def vep_cmd(variant: str, show_all: bool, verbose: bool):
+    """
+    Annotate a variant using Ensembl VEP REST API (GRCh38).
+
+    \b
+    Accepts variant in format: chrom:pos:ref:alt
+    Examples:
+        wombat vep chr1:151776102:GC:AA
+        wombat vep 17:41245466:G:A --all
+    """
+    from pywombat.vep import (
+        extract_annotations,
+        format_annotations,
+        parse_variant,
+        query_vep,
+    )
+
+    try:
+        parsed = parse_variant(variant)
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        raise click.Abort()
+
+    if verbose:
+        click.echo(f"Querying Ensembl VEP API for {variant}...", err=True)
+
+    try:
+        responses = query_vep([parsed])
+    except (ConnectionError, RuntimeError) as e:
+        click.echo(f"Error: {e}", err=True)
+        raise click.Abort()
+
+    if not responses:
+        click.echo("No results returned from VEP API.", err=True)
+        raise click.Abort()
+
+    if verbose:
+        click.echo("Extracting annotations...", err=True)
+
+    annotations = extract_annotations(responses[0], canonical_only=not show_all)
+    output = format_annotations(annotations, variant)
+    click.echo(output)
 
 
 if __name__ == "__main__":
