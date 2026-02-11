@@ -482,3 +482,92 @@ class TestMNVOnlyFilter:
         assert result.columns == test_data.columns, \
             "All columns should be preserved"
         assert result["VEP_SYMBOL"][0] == "BRCA1"
+
+
+class TestExcludeMHCFilter:
+    """Test mnv.exclude_mhc filter option."""
+
+    @staticmethod
+    def _apply_mhc_filter(df, exclude_mhc):
+        """Reproduce the MHC exclusion logic from cli.py."""
+        mhc_chrom = exclude_mhc.get("chrom", "6")
+        mhc_start = exclude_mhc.get("start", 28510120)
+        mhc_end = exclude_mhc.get("end", 33480577)
+        chrom_col = pl.col("#CHROM").cast(pl.Utf8)
+        is_mhc = (
+            (chrom_col == mhc_chrom)
+            | (chrom_col == f"chr{mhc_chrom}")
+        ) & (pl.col("POS") >= mhc_start) & (pl.col("POS") <= mhc_end)
+        return df.filter(~is_mhc)
+
+    def test_excludes_mhc_variants_chr_prefix(self):
+        """Test that MHC variants with chr6 prefix are excluded."""
+        test_data = pl.DataFrame({
+            "#CHROM": ["chr1", "chr6", "chr6", "chr6"],
+            "POS": [100, 30000000, 28510120, 34000000],
+            "REF": ["A", "C", "G", "T"],
+            "ALT": ["G", "T", "A", "C"],
+        })
+        result = self._apply_mhc_filter(
+            test_data, {"enabled": True, "chrom": "6", "start": 28510120, "end": 33480577}
+        )
+        # chr1:100 (not chr6), chr6:34000000 (outside MHC) should remain
+        assert result.shape[0] == 2
+        assert set(result["POS"].to_list()) == {100, 34000000}
+
+    def test_excludes_mhc_variants_no_chr_prefix(self):
+        """Test that MHC variants without chr prefix are excluded."""
+        test_data = pl.DataFrame({
+            "#CHROM": ["1", "6", "6", "6"],
+            "POS": [100, 30000000, 33480577, 33480578],
+            "REF": ["A", "C", "G", "T"],
+            "ALT": ["G", "T", "A", "C"],
+        })
+        result = self._apply_mhc_filter(
+            test_data, {"enabled": True, "chrom": "6", "start": 28510120, "end": 33480577}
+        )
+        # 1:100 (not chr6), 6:33480578 (outside MHC) should remain
+        assert result.shape[0] == 2
+        assert set(result["POS"].to_list()) == {100, 33480578}
+
+    def test_mhc_boundary_inclusive(self):
+        """Test that MHC boundaries are inclusive (start and end are excluded)."""
+        test_data = pl.DataFrame({
+            "#CHROM": ["chr6", "chr6", "chr6", "chr6"],
+            "POS": [28510119, 28510120, 33480577, 33480578],
+            "REF": ["A", "C", "G", "T"],
+            "ALT": ["G", "T", "A", "C"],
+        })
+        result = self._apply_mhc_filter(
+            test_data, {"enabled": True, "chrom": "6", "start": 28510120, "end": 33480577}
+        )
+        # Only positions just outside the boundaries should remain
+        assert result.shape[0] == 2
+        assert set(result["POS"].to_list()) == {28510119, 33480578}
+
+    def test_no_mhc_variants_unchanged(self):
+        """Test that DataFrame without MHC variants is unchanged."""
+        test_data = pl.DataFrame({
+            "#CHROM": ["chr1", "chr2", "chr3"],
+            "POS": [100, 200, 300],
+            "REF": ["A", "C", "G"],
+            "ALT": ["G", "T", "A"],
+        })
+        result = self._apply_mhc_filter(
+            test_data, {"enabled": True, "chrom": "6", "start": 28510120, "end": 33480577}
+        )
+        assert result.shape[0] == 3
+
+    def test_default_grch38_coordinates(self):
+        """Test that default coordinates match GRCh38 xMHC region."""
+        test_data = pl.DataFrame({
+            "#CHROM": ["chr6", "chr6"],
+            "POS": [30000000, 40000000],
+            "REF": ["A", "C"],
+            "ALT": ["G", "T"],
+        })
+        # Use defaults (no explicit start/end)
+        result = self._apply_mhc_filter(test_data, {"enabled": True, "chrom": "6"})
+        # 30M is inside default MHC, 40M is outside
+        assert result.shape[0] == 1
+        assert result["POS"][0] == 40000000

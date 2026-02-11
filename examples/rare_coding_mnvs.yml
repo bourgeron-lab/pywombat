@@ -1,18 +1,22 @@
 # ============================================================================
-# PyWombat Configuration: Rare Coding Variants
+# PyWombat Configuration: Rare Coding Variants with MNV Detection
 # ============================================================================
 #
-# Filters for coding variants (HIGH, MODERATE impact, and synonymous).
-# Useful for comprehensive coding variant analysis including silent changes.
+# Filters for coding variants (HIGH, MODERATE impact, and synonymous)
+# with MNV candidate detection, VEP re-annotation, and MHC exclusion.
 #
 # Target variants:
 #   • HIGH and MODERATE impact variants
 #   • Synonymous variants (for reference or conservation analysis)
 #   • Pass gnomAD filters with variant-type-specific quality
+#   • MNV candidates only (non-MNV variants are filtered out)
 #
 # Usage:
-#   uvx pywombat filter input.tsv -F examples/rare_coding.yml -o output
-#   uvx pywombat filter prepared.parquet -F examples/rare_coding.yml -o output
+#   uvx pywombat filter prepared.parquet \
+#     -F examples/rare_coding_mnvs.yml \
+#     --bcf cohort.bcf \
+#     --fasta GRCh38.fa \
+#     -o coding_mnvs -v
 #
 # ============================================================================
 
@@ -29,10 +33,6 @@ quality:
   apply_to_parents: false # Apply same quality filters to parent genotypes
   filter_no_alt_allele: true # Exclude 0/0 and ./. genotypes
 
-  # Uncomment to filter for only homozygous alternative 1/1 variants
-  # Useful for recessive disease analysis
-  # homalt_only: false
-
 expression: >
   VEP_CANONICAL = YES &
   ((is_snv & AQ > 15) | (is_indel & AQ > 22)) &
@@ -44,25 +44,33 @@ expression: >
   )
 
 # ----------------------------------------------------------------------------
-# MNV Detection Configuration (Optional)
+# MNV Detection Configuration
 # ----------------------------------------------------------------------------
-# Uncomment to enable MNV (Multi-Nucleotide Variant) candidate detection
-# Identifies cases where nearby variants may combine to alter functional impact
-#
-# Example use case:
-#   Two missense SNVs → combined synonymous MNV
-#   Two frameshift indels → combined inframe variant
+# Detects MNV (Multi-Nucleotide Variant) candidates, re-annotates them via
+# VEP, and outputs only MNV candidates (all non-MNV variants are removed).
 #
 # Requires additional command-line options:
 #   --bcf /path/to/cohort.bcf (tabix-indexed BCF file)
 #   --fasta /path/to/genome.fa (indexed FASTA reference)
-#
+
 mnv:
   candidate: true # Enable MNV candidate detection
-  annotate: true # Add MNV annotations to output
+  annotate: true # Re-annotate MNV candidates via Ensembl VEP REST API
+  only: true # Only output MNV candidates (filters out non-MNV variants)
   indel_window: 10 # Window size for indel clustering (default: 10)
+
+  # Exclude MHC region (GRCh38 coordinates)
+  # The MHC / HLA region on chromosome 6 has extremely high variant density
+  # and complex haplotype structure, leading to unreliable variant calling
+  # and a large number of spurious MNV candidates.
+  exclude_mhc:
+    enabled: true
+    chrom: "6" # Chromosome (matches both "6" and "chr6")
+    start: 28510120 # GRCh38 xMHC start
+    end: 33480577 # GRCh38 xMHC end
+
 #
-# Output columns added when enabled:
+# Output columns added by MNV detection:
 #   • mnv_proba: Phasing probability (0.0-1.0) or null
 #   • mnv_inframe: True/False for indels (maintains reading frame)
 #   • mnv_variant: Reconstructed variant notation for SNVs (chr:pos:ref:alt)

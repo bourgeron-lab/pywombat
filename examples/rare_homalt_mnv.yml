@@ -89,6 +89,15 @@ mnv:
   # Optional: Max variants per VEP API batch (default: 200, max: 200)
   # annotate_batch_size: 200
 
+  # Exclude MHC region before MNV detection (default: disabled)
+  # The MHC / HLA region on chromosome 6 has extremely high variant density
+  # and complex haplotype structure, producing many spurious MNV candidates.
+  # exclude_mhc:
+  #   enabled: true
+  #   chrom: "6"           # Matches both "6" and "chr6"
+  #   start: 28510120      # GRCh38 xMHC start
+  #   end: 33480577        # GRCh38 xMHC end
+
   # Future options (not yet implemented):
   # validate: false      # Validate phasing using CRAM alignments
 

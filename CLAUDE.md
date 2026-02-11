@@ -6,7 +6,7 @@ This document provides context and guidelines for AI assistants working on the p
 
 **PyWombat** is a high-performance CLI tool for processing and filtering bcftools tabulated TSV files with advanced filtering capabilities, pedigree support, and de novo mutation (DNM) detection.
 
-- **Version**: 1.5.1 (current)
+- **Version**: 1.5.2 (current)
 - **Python**: 3.12+
 - **License**: MIT
 - **Repository**: https://github.com/bourgeron-lab/pywombat
@@ -70,7 +70,7 @@ pywombat/
 │   ├── README.md             # Configuration examples guide
 │   ├── rare_high_impact.yml  # High-impact variants
 │   ├── rare_homalt.yml       # Homozygous alternative filtering
-│   ├── rare_coding.yml       # All coding variants
+│   ├── rare_coding_mnvs.yml  # Coding variants with MNV + MHC exclusion
 │   ├── rare_missense.yml     # Missense with pathogenicity scores
 │   ├── rare_spliceai.yml     # Splicing variants
 │   ├── de_novo_mutations.yml # DNM detection config
@@ -441,6 +441,11 @@ mnv:
   indel_window: 10
   only: false          # Keep only MNV candidates in output
   annotate: false      # Re-annotate MNV candidates via VEP API
+  exclude_mhc:         # Exclude MHC region before MNV detection
+    enabled: false
+    chrom: "6"         # Matches both "6" and "chr6"
+    start: 28510120    # GRCh38 xMHC start
+    end: 33480577      # GRCh38 xMHC end
 ```
 
 **Configuration loading**: `load_filter_config()` (cli.py, line 720)

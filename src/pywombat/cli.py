@@ -632,6 +632,31 @@ def filter_cmd(
 
             # Collect DataFrame for MNV processing
             df = lazy_df.collect()
+
+            # Exclude MHC region if configured
+            exclude_mhc = mnv_config.get("exclude_mhc", {})
+            if exclude_mhc.get("enabled", False):
+                mhc_chrom = exclude_mhc.get("chrom", "6")
+                mhc_start = exclude_mhc.get("start", 28510120)
+                mhc_end = exclude_mhc.get("end", 33480577)
+                before_count = df.shape[0]
+
+                # Match both "6" and "chr6" formats
+                chrom_col = pl.col("#CHROM").cast(pl.Utf8)
+                is_mhc = (
+                    (chrom_col == mhc_chrom)
+                    | (chrom_col == f"chr{mhc_chrom}")
+                ) & (pl.col("POS") >= mhc_start) & (pl.col("POS") <= mhc_end)
+                df = df.filter(~is_mhc)
+
+                if verbose:
+                    removed = before_count - df.shape[0]
+                    click.echo(
+                        f"  Excluded MHC region (chr{mhc_chrom}:{mhc_start}-{mhc_end}): "
+                        f"removed {removed} variants",
+                        err=True,
+                    )
+
             df = detect_mnv_probas(df, str(bcf), str(fasta), mnv_config)
 
             if verbose:

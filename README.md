@@ -466,6 +466,11 @@ mnv:
   only: false          # Set to true to keep only MNV candidates in output
   # annotate_timeout: 30      # HTTP timeout for VEP API requests (default: 30s)
   # annotate_batch_size: 200  # Max variants per VEP API batch (default/max: 200)
+  exclude_mhc:                # Exclude MHC region (noisy, unreliable calling)
+    enabled: true
+    chrom: "6"                # Matches both "6" and "chr6"
+    start: 28510120           # GRCh38 xMHC start
+    end: 33480577             # GRCh38 xMHC end
 ```
 
 ### Required Command-Line Options
