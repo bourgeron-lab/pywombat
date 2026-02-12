@@ -6,7 +6,7 @@ This document provides context and guidelines for AI assistants working on the p
 
 **PyWombat** is a high-performance CLI tool for processing and filtering bcftools tabulated TSV files with advanced filtering capabilities, pedigree support, and de novo mutation (DNM) detection.
 
-- **Version**: 1.5.2 (current)
+- **Version**: 1.6.0 (current)
 - **Python**: 3.12+
 - **License**: MIT
 - **Repository**: https://github.com/bourgeron-lab/pywombat
@@ -57,11 +57,13 @@ pywombat/
 │   ├── __init__.py           # Package initialization
 │   ├── cli.py                # Main CLI implementation
 │   ├── mnv.py                # MNV detection module (optional feature)
-│   └── vep.py                # VEP REST API annotation module
+│   └── vep.py                # VEP REST API annotation + external merge module
 ├── tests/
 │   ├── conftest.py           # Pytest fixtures
 │   ├── test_cli.py           # CLI structure tests
 │   ├── test_filter.py        # Filter command tests (includes DNM, homalt)
+│   ├── example.to_annotate.vcf  # Reference VCF for external annotation tests
+│   ├── example.annotated.tsv    # Reference VEP tab output for merge tests
 │   ├── test_prepare.py       # Prepare command tests
 │   ├── test_mnv.py           # MNV detection tests (requires optional deps)
 │   ├── test_vep.py           # VEP annotation tests
@@ -196,18 +198,36 @@ uv run wombat vep chr17:43094433:G:A -v       # Verbose
 - `query_vep()` — POST to Ensembl REST API (batch support, up to 200 variants)
 - `extract_annotations()` — Extracts per-transcript annotations from VEP response
 - `format_annotations()` — Formats annotations for CLI display
-- `annotate_mnv_variants()` — Annotates MNV candidates in a DataFrame (used by `filter` command when `mnv.annotate: true`)
+- `annotate_mnv_variants()` — Annotates MNV candidates in a DataFrame (used by `annotate: vep_api`)
 - `_find_transcript_annotation()` — Finds a specific transcript in a VEP response by ENST ID
+- `create_mnv_placeholders_and_vcf()` — Creates placeholder MNV rows + VCF (used by `annotate: external`)
+- `parse_vep_annotation_file()` — Parses VEP tab output into lookup dict
+- `merge_vep_annotations()` — Merges VEP annotations back into TSV with placeholders
 
 **VEP API parameters**: `canonical=1, LoF=1, hgvs=1, protein=1, mane=1, numbers=1`
 
 **LOFTEE support**: Enabled via `LoF=1`. Returns `LoF` (HC/LC/OS), `LoF_filter`, `LoF_flags`, `LoF_info` for loss-of-function variants.
 
-**MNV annotation** (via `mnv.annotate: true` in YAML config):
-- After MNV detection, queries VEP for reconstructed SNV MNV variants
-- Matches response to the original row's `VEP_Feature` transcript
-- Appends new rows with MNV VEP annotations to the output DataFrame
-- `mnv_proba` column for new rows = `1.0 - original_value`
+**MNV annotation modes** (via `mnv.annotate` in YAML config):
+- `false` (default) — No annotation
+- `vep_api` (or `true`) — Queries VEP REST API, appends new rows with MNV VEP annotations
+- `external` — Creates placeholder rows + `.to_annotate.vcf` for offline VEP, merged back with `wombat merge-annotations`
+
+### Command 4: `wombat merge-annotations`
+
+**Purpose**: Merge external VEP tab-delimited annotations back into a filtered TSV.
+
+**Usage**:
+```bash
+uv run wombat merge-annotations --tsv output.tsv --annotations output.annotated.tsv -o merged -v
+```
+
+**Process**:
+1. Reads TSV with placeholder MNV rows (from `annotate: external`)
+2. Parses VEP tab output file (skips `##` comments, handles `#`-prefixed header)
+3. Matches placeholders by `chr:pos:ref:alt` + transcript base ID (without version)
+4. Fills VEP columns in matched placeholders
+5. Writes merged output
 
 ## Filter Types
 
@@ -440,7 +460,7 @@ mnv:
   candidate: false
   indel_window: 10
   only: false          # Keep only MNV candidates in output
-  annotate: false      # Re-annotate MNV candidates via VEP API
+  annotate: false      # MNV annotation: false | vep_api | external
   exclude_mhc:         # Exclude MHC region before MNV detection
     enabled: false
     chrom: "6"         # Matches both "6" and "chr6"
@@ -919,9 +939,9 @@ uv run pytest --cov=pywombat --cov-report=html
 
 | File | Purpose | Key Functions/Content |
 |------|---------|----------------------|
-| `src/pywombat/cli.py` | Main CLI | `filter_cmd`, `prepare_cmd`, `vep_cmd`, `apply_quality_filters`, `apply_de_novo_filter`, `parse_impact_filter_expression` |
+| `src/pywombat/cli.py` | Main CLI | `filter_cmd`, `prepare_cmd`, `vep_cmd`, `merge_annotations_cmd`, `_normalize_annotate_mode`, `apply_quality_filters`, `apply_de_novo_filter`, `parse_impact_filter_expression` |
 | `src/pywombat/mnv.py` | MNV detection | `calculate_phasing_probability`, `calculate_indel_inframe`, `detect_mnv_candidates` |
-| `src/pywombat/vep.py` | VEP annotation | `parse_variant`, `query_vep`, `extract_annotations`, `annotate_mnv_variants` |
+| `src/pywombat/vep.py` | VEP annotation + merge | `parse_variant`, `query_vep`, `extract_annotations`, `annotate_mnv_variants`, `create_mnv_placeholders_and_vcf`, `parse_vep_annotation_file`, `merge_vep_annotations` |
 | `pyproject.toml` | Project config | Version, dependencies, build config |
 | `examples/rare_homalt.yml` | Recessive analysis | homalt_only filter |
 | `examples/de_novo_mutations.yml` | DNM config | DNM settings with PAR regions |

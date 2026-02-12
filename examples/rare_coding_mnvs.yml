@@ -55,7 +55,8 @@ expression: >
 
 mnv:
   candidate: true # Enable MNV candidate detection
-  annotate: true # Re-annotate MNV candidates via Ensembl VEP REST API
+  annotate: vep_api # Re-annotate MNV candidates via Ensembl VEP REST API
+  # Options: false (default), vep_api (REST API), external (offline VCF+merge)
   only: true # Only output MNV candidates (filters out non-MNV variants)
   indel_window: 10 # Window size for indel clustering (default: 10)
 

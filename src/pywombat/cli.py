@@ -11,6 +11,39 @@ import polars as pl
 import yaml
 
 
+def _normalize_annotate_mode(value) -> str:
+    """Normalize the mnv.annotate config value to a standard string.
+
+    Supports:
+        True / "true" -> "vep_api" (backward compatible)
+        False / None / "false" -> "false"
+        "vep_api" -> "vep_api"
+        "external" -> "external"
+
+    Returns:
+        One of: "false", "vep_api", "external"
+
+    Raises:
+        click.BadParameter: If value is not recognized.
+    """
+    if value is None or value is False:
+        return "false"
+    if value is True:
+        return "vep_api"
+    if isinstance(value, str):
+        lower = value.strip().lower()
+        if lower in ("false", "no", "off", "0"):
+            return "false"
+        if lower in ("true", "yes", "on", "1", "vep_api"):
+            return "vep_api"
+        if lower == "external":
+            return "external"
+    raise click.BadParameter(
+        f"Invalid annotate mode: '{value}'. "
+        "Must be false, vep_api, or external."
+    )
+
+
 @click.group()
 def cli():
     """
@@ -18,9 +51,10 @@ def cli():
 
     \b
     Commands:
-        filter   Process and filter variant data
-        prepare  Convert TSV to optimized Parquet format
-        vep      Annotate variant using Ensembl VEP REST API
+        filter             Process and filter variant data
+        prepare            Convert TSV to optimized Parquet format
+        vep                Annotate variant using Ensembl VEP REST API
+        merge-annotations  Merge external VEP annotations into filtered TSV
     """
     pass
 
@@ -664,7 +698,11 @@ def filter_cmd(
                 click.echo(f"  Found {n_candidates} MNV candidates", err=True)
 
             # VEP annotation of MNV candidates
-            if mnv_config.get("annotate", False):
+            annotate_mode = _normalize_annotate_mode(
+                mnv_config.get("annotate", False)
+            )
+
+            if annotate_mode == "vep_api":
                 if verbose:
                     click.echo("Annotating MNV candidates via VEP API...", err=True)
 
@@ -676,6 +714,23 @@ def filter_cmd(
                     batch_size=mnv_config.get("annotate_batch_size", 200),
                     timeout=mnv_config.get("annotate_timeout", 30),
                 )
+            elif annotate_mode == "external":
+                if verbose:
+                    click.echo(
+                        "Creating MNV placeholders and VCF for external annotation...",
+                        err=True,
+                    )
+
+                from pywombat.vep import create_mnv_placeholders_and_vcf
+
+                df, vcf_path = create_mnv_placeholders_and_vcf(
+                    df, output_prefix=output, verbose=verbose
+                )
+
+                if verbose and vcf_path.stat().st_size > 0:
+                    click.echo(
+                        f"  VCF for external annotation: {vcf_path}", err=True
+                    )
 
             # Filter to MNV-only if configured
             if mnv_config.get("only", False):
@@ -2908,6 +2963,97 @@ def vep_cmd(variant: str, show_all: bool, verbose: bool):
     annotations = extract_annotations(responses[0], canonical_only=not show_all)
     output = format_annotations(annotations, variant)
     click.echo(output)
+
+
+@cli.command("merge-annotations")
+@click.option(
+    "--tsv",
+    type=click.Path(exists=True, path_type=Path),
+    required=True,
+    help="TSV file with placeholder MNV rows (from annotate: external).",
+)
+@click.option(
+    "--annotations",
+    type=click.Path(exists=True, path_type=Path),
+    required=True,
+    help="VEP tab-delimited output file with annotations.",
+)
+@click.option(
+    "-o",
+    "--output",
+    type=str,
+    required=True,
+    help="Output file prefix.",
+)
+@click.option(
+    "-f",
+    "--format",
+    "output_format",
+    default="tsv",
+    type=click.Choice(["tsv", "tsv.gz", "parquet"]),
+    help="Output format (default: tsv).",
+)
+@click.option("-v", "--verbose", is_flag=True, help="Enable verbose output.")
+def merge_annotations_cmd(
+    tsv: Path,
+    annotations: Path,
+    output: str,
+    output_format: str,
+    verbose: bool,
+):
+    """
+    Merge external VEP annotations back into a filtered TSV.
+
+    \b
+    After running 'wombat filter' with annotate: external, you get:
+      1. A filtered TSV with placeholder MNV rows (VEP columns empty)
+      2. A .to_annotate.vcf file with MNV variants
+
+    Run VEP externally on the VCF, then use this command to merge
+    the VEP annotations back into the TSV.
+
+    \b
+    Example workflow:
+        # Step 1: Filter with external annotation
+        wombat filter prepared.parquet -F config.yml --bcf c.bcf --fasta ref.fa -o out -v
+
+        # Step 2: Run VEP externally
+        vep --input_file out.to_annotate.vcf --tab --output_file out.annotated.tsv ...
+
+        # Step 3: Merge annotations
+        wombat merge-annotations --tsv out.tsv --annotations out.annotated.tsv -o merged -v
+    """
+    try:
+        if verbose:
+            click.echo(
+                f"Merging VEP annotations from {annotations} into {tsv}...",
+                err=True,
+            )
+
+        from pywombat.vep import merge_vep_annotations
+
+        df = merge_vep_annotations(tsv, annotations, verbose=verbose)
+
+        # Write output
+        output_path = Path(f"{output}.{output_format}")
+
+        if output_format == "tsv":
+            df.write_csv(output_path, separator="\t")
+        elif output_format == "tsv.gz":
+            import gzip as gzip_mod
+
+            csv_content = df.write_csv(separator="\t")
+            with gzip_mod.open(output_path, "wt") as f:
+                f.write(csv_content)
+        elif output_format == "parquet":
+            df.write_parquet(output_path)
+
+        if verbose:
+            click.echo(f"Merged data written to {output_path}", err=True)
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        raise click.Abort()
 
 
 if __name__ == "__main__":

@@ -5,6 +5,42 @@ All notable changes to PyWombat will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-02-12
+
+### Added
+
+- **Three-mode MNV annotation** (`mnv.annotate`): The `annotate` option now supports three modes:
+  - `false` (default) — No annotation
+  - `vep_api` — Annotate via Ensembl VEP REST API (previously `true`)
+  - `external` — Produce a `.to_annotate.vcf` file for offline VEP annotation, with placeholder MNV rows in the output TSV
+  - Backward compatible: `true`/`false` still work as before
+
+- **`wombat merge-annotations` command**: New subcommand to merge external VEP tab-delimited output back into a filtered TSV
+  - Matches annotations by variant ID (`chr:pos:ref:alt`) and transcript base ID (ENST without version)
+  - Fills VEP columns in placeholder rows created by `annotate: external`
+  - Supports TSV, TSV.gz, and Parquet output formats
+
+- **New VEP module functions** (`src/pywombat/vep.py`):
+  - `VEP_FILE_COLUMN_MAPPING` — Maps VEP tab output column names to DataFrame `VEP_*` columns
+  - `create_mnv_placeholders_and_vcf()` — Creates placeholder rows and VCF for external annotation
+  - `parse_vep_annotation_file()` — Parses VEP tab-delimited output into a lookup dict
+  - `merge_vep_annotations()` — Merges VEP annotations back into TSV with placeholders
+
+### Changed
+
+- **`annotate: true` is now `annotate: vep_api`**: Existing configs with `annotate: true` continue to work (backward compatible)
+- Updated example configs (`rare_coding_mnvs.yml`, `rare_homalt_mnv.yml`) to use `annotate: vep_api`
+
+### Testing
+
+- Added 30 new tests:
+  - `TestNormalizeAnnotateMode` (8 tests) — Annotate mode normalization
+  - `TestCreateMnvPlaceholdersAndVcf` (10 tests) — Placeholder creation and VCF output
+  - `TestParseVepAnnotationFile` (6 tests) — VEP file parsing
+  - `TestMergeVepAnnotations` (5 tests) — Annotation merging with real example data
+  - `TestNormalizeAnnotateMode` in test_filter.py (3 tests) — Filter context validation
+- Total test suite: 160 passed, 2 skipped
+
 ## [1.5.3] - 2026-02-11
 
 ### Fixed

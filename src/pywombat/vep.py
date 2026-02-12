@@ -5,6 +5,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import click
 
@@ -52,6 +53,31 @@ VEP_COLUMN_MAPPING = {
 _SAMPLE_COLUMNS = [
     "sample", "sample_gt", "sample_dp", "sample_gq", "sample_ad", "sample_vaf",
 ]
+
+# Maps VEP tab-delimited output file column names to DataFrame VEP_* column names.
+# Used by parse_vep_annotation_file() and merge_vep_annotations().
+VEP_FILE_COLUMN_MAPPING = {
+    "Consequence": "VEP_Consequence",
+    "IMPACT": "VEP_IMPACT",
+    "SYMBOL": "VEP_SYMBOL",
+    "Feature": "VEP_Feature",
+    "Gene": "VEP_Gene",
+    "BIOTYPE": "VEP_BIOTYPE",
+    "HGVSc": "VEP_HGVSc",
+    "HGVSp": "VEP_HGVSp",
+    "Protein_position": "VEP_Protein_position",
+    "Amino_acids": "VEP_Amino_acids",
+    "Codons": "VEP_Codons",
+    "EXON": "VEP_EXON",
+    "INTRON": "VEP_INTRON",
+    "MANE_SELECT": "VEP_MANE_SELECT",
+    "MANE_PLUS_CLINICAL": "VEP_MANE_PLUS_CLINICAL",
+    "CANONICAL": "VEP_CANONICAL",
+    "LoF": "VEP_LoF",
+    "LoF_filter": "VEP_LoF_filter",
+    "LoF_flags": "VEP_LoF_flags",
+    "LoF_info": "VEP_LoF_info",
+}
 
 
 def parse_variant(variant_str: str) -> dict:
@@ -545,5 +571,377 @@ def annotate_mnv_variants(
             click.echo(
                 f"  Skipped {skipped} MNV variant(s) (no VEP match)", err=True
             )
+
+    return result
+
+
+def create_mnv_placeholders_and_vcf(
+    df: "pl.DataFrame",
+    output_prefix: str,
+    verbose: bool = False,
+) -> tuple["pl.DataFrame", "Path"]:
+    """Create placeholder MNV rows (no VEP data) and a VCF for external annotation.
+
+    For each row where mnv_proba is not null and mnv_variant is valid,
+    builds a placeholder row with:
+      - #CHROM/POS/REF/ALT from the mnv_variant (using chrom_raw)
+      - sample columns copied from the original row
+      - parent columns set to null
+      - mnv_proba = 1.0 - original value
+      - mnv_variant = null, mnv_inframe = null
+      - VEP_Feature copied from original (target transcript for later matching)
+      - All other VEP columns set to null
+
+    Also writes a deduplicated, sorted .to_annotate.vcf file with the MNV variants.
+
+    Args:
+        df: DataFrame with MNV columns and VEP_Feature column.
+        output_prefix: Path prefix for output files (VCF will be {prefix}.to_annotate.vcf).
+        verbose: Print progress to stderr.
+
+    Returns:
+        Tuple of (DataFrame with placeholders appended, Path to VCF file).
+    """
+    import polars as pl
+
+    all_columns = df.columns
+
+    # Check prerequisites
+    if "VEP_Feature" not in all_columns:
+        if verbose:
+            click.echo(
+                "Warning: VEP_Feature column not found, skipping external annotation setup.",
+                err=True,
+            )
+        vcf_path = Path(f"{output_prefix}.to_annotate.vcf")
+        vcf_path.write_text("")
+        return df, vcf_path
+
+    if "mnv_proba" not in all_columns or "mnv_variant" not in all_columns:
+        vcf_path = Path(f"{output_prefix}.to_annotate.vcf")
+        vcf_path.write_text("")
+        return df, vcf_path
+
+    # Find eligible rows
+    mnv_rows = df.filter(
+        pl.col("mnv_proba").is_not_null()
+        & pl.col("mnv_variant").is_not_null()
+        & (pl.col("mnv_variant") != "")
+        & (pl.col("mnv_variant") != ":::")
+        & pl.col("VEP_Feature").is_not_null()
+        & (pl.col("VEP_Feature") != "")
+        & (pl.col("VEP_Feature") != ".")
+    )
+
+    vcf_path = Path(f"{output_prefix}.to_annotate.vcf")
+
+    if mnv_rows.is_empty():
+        if verbose:
+            click.echo(
+                "  No MNV candidates eligible for external annotation.", err=True
+            )
+        vcf_path.write_text("")
+        return df, vcf_path
+
+    # Determine which columns are present
+    sample_cols_present = [c for c in _SAMPLE_COLUMNS if c in all_columns]
+    parent_cols = [
+        c for c in all_columns if c.startswith("father_") or c.startswith("mother_")
+    ]
+
+    # Build placeholder rows and collect unique variants for VCF
+    new_rows = []
+    unique_variants = {}  # variant_str -> (chrom_raw, pos, ref, alt)
+    skipped = 0
+
+    for row in mnv_rows.iter_rows(named=True):
+        v_str = row["mnv_variant"]
+        try:
+            parsed = parse_variant(v_str)
+        except ValueError as e:
+            if verbose:
+                click.echo(
+                    f"  Warning: Skipping unparseable MNV variant '{v_str}': {e}",
+                    err=True,
+                )
+            skipped += 1
+            continue
+
+        # Collect unique variants for VCF
+        if v_str not in unique_variants:
+            unique_variants[v_str] = (
+                parsed["chrom_raw"],
+                parsed["pos"],
+                parsed["ref"],
+                parsed["alt"],
+            )
+
+        # Build placeholder row
+        new_row = {col: None for col in all_columns}
+
+        # Genomic coordinates from MNV variant (using chrom_raw)
+        new_row["#CHROM"] = parsed["chrom_raw"]
+        new_row["POS"] = parsed["pos"]
+        new_row["REF"] = parsed["ref"]
+        new_row["ALT"] = parsed["alt"]
+
+        # Copy sample columns
+        for sc in sample_cols_present:
+            new_row[sc] = row[sc]
+
+        # Parent columns stay None (already set)
+
+        # MNV-specific columns
+        new_row["mnv_proba"] = 1.0 - row["mnv_proba"]
+        new_row["mnv_variant"] = None
+        new_row["mnv_inframe"] = None
+
+        # Copy VEP_Feature (target transcript for later matching)
+        new_row["VEP_Feature"] = row["VEP_Feature"]
+
+        # All other VEP columns stay null
+
+        new_rows.append(new_row)
+
+    # Write VCF file
+    # Sort by chrom then pos
+    sorted_variants = sorted(unique_variants.values(), key=lambda v: (v[0], v[1]))
+
+    vcf_lines = ["#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT"]
+    for chrom_raw, pos, ref, alt in sorted_variants:
+        variant_id = f"{chrom_raw}:{pos}:{ref}:{alt}"
+        vcf_lines.append(f"{chrom_raw}\t{pos}\t{variant_id}\t{ref}\t{alt}\t.\t.\t.\t.")
+
+    vcf_path.write_text("\n".join(vcf_lines) + "\n")
+
+    if verbose:
+        click.echo(
+            f"  Wrote {len(sorted_variants)} unique MNV variant(s) to {vcf_path}",
+            err=True,
+        )
+
+    # Concatenate placeholder rows
+    if new_rows:
+        new_df = pl.DataFrame(new_rows, schema=df.schema)
+        result = pl.concat([df, new_df], how="vertical_relaxed")
+
+        if verbose:
+            click.echo(
+                f"  Added {len(new_rows)} MNV placeholder row(s) for external annotation",
+                err=True,
+            )
+    else:
+        result = df
+
+    if skipped > 0 and verbose:
+        click.echo(
+            f"  Skipped {skipped} unparseable MNV variant(s)", err=True
+        )
+
+    return result, vcf_path
+
+
+def parse_vep_annotation_file(
+    annotation_path: Path,
+    verbose: bool = False,
+) -> dict[tuple[str, str], dict]:
+    """Parse a VEP tab-delimited output file into a lookup dict.
+
+    Skips ## comment lines, parses the #-prefixed header, and builds a dict
+    keyed by (Uploaded_variation, transcript_base_id) for matching.
+
+    Args:
+        annotation_path: Path to VEP tab-delimited output file.
+        verbose: Print progress to stderr.
+
+    Returns:
+        Dict mapping (variant_id, transcript_base_id) to dict of VEP_* column values.
+    """
+    lookup = {}
+    header = None
+    n_rows = 0
+
+    with open(annotation_path, "r") as f:
+        for line in f:
+            line = line.rstrip("\n")
+
+            # Skip VEP metadata comments
+            if line.startswith("##"):
+                continue
+
+            # Parse header line (starts with #)
+            if line.startswith("#") and header is None:
+                # Strip leading # from first column name
+                header_line = line.lstrip("#")
+                header = header_line.split("\t")
+                continue
+
+            if header is None:
+                continue
+
+            # Parse data row
+            fields = line.split("\t")
+            if len(fields) != len(header):
+                continue
+
+            row_dict = dict(zip(header, fields))
+
+            # Build lookup key
+            variant_id = row_dict.get("Uploaded_variation", "")
+            feature = row_dict.get("Feature", "")
+            transcript_base = _transcript_base_id(feature)
+
+            key = (variant_id, transcript_base)
+
+            # Map columns via VEP_FILE_COLUMN_MAPPING
+            vep_values = {}
+            for file_col, df_col in VEP_FILE_COLUMN_MAPPING.items():
+                value = row_dict.get(file_col)
+                if value == "-" or value is None:
+                    vep_values[df_col] = None
+                else:
+                    vep_values[df_col] = value
+
+            # Preserve the full versioned Feature value in VEP_Feature
+            if feature and feature != "-":
+                vep_values["VEP_Feature"] = feature
+
+            lookup[key] = vep_values
+            n_rows += 1
+
+    if verbose:
+        click.echo(
+            f"  Parsed {n_rows} annotation row(s) from {annotation_path}",
+            err=True,
+        )
+
+    return lookup
+
+
+def merge_vep_annotations(
+    tsv_path: Path,
+    annotation_path: Path,
+    verbose: bool = False,
+) -> "pl.DataFrame":
+    """Merge external VEP annotations back into the TSV with placeholder rows.
+
+    Reads the TSV (with placeholder MNV rows from external annotation mode),
+    parses the VEP annotation file, and fills VEP columns in placeholder rows
+    by matching on variant ID + transcript base ID.
+
+    Placeholder rows are identified by having a null/empty VEP_Consequence column.
+
+    Args:
+        tsv_path: Path to TSV file with placeholder MNV rows.
+        annotation_path: Path to VEP tab-delimited output file.
+        verbose: Print progress to stderr.
+
+    Returns:
+        DataFrame with VEP columns filled in for matched placeholder rows.
+    """
+    import polars as pl
+
+    # Read TSV
+    df = pl.read_csv(tsv_path, separator="\t", infer_schema_length=10000)
+    all_columns = df.columns
+
+    if verbose:
+        click.echo(f"  Read {df.shape[0]} rows from {tsv_path}", err=True)
+
+    # Parse VEP annotation file
+    lookup = parse_vep_annotation_file(annotation_path, verbose=verbose)
+
+    if not lookup:
+        if verbose:
+            click.echo("  No annotations found in VEP file.", err=True)
+        return df
+
+    # Identify placeholder rows: VEP_Consequence is null or empty
+    if "VEP_Consequence" not in all_columns:
+        if verbose:
+            click.echo(
+                "  Warning: VEP_Consequence column not found, cannot identify placeholders.",
+                err=True,
+            )
+        return df
+
+    # Determine which VEP columns from the file mapping exist in the DataFrame
+    vep_cols_in_df = [
+        col for col in VEP_FILE_COLUMN_MAPPING.values()
+        if col in all_columns
+    ]
+
+    # Process row by row, filling placeholders
+    filled = 0
+    not_found = 0
+
+    # Build variant ID for each row: {#CHROM}:{POS}:{REF}:{ALT}
+    # Identify placeholders
+    is_placeholder = (
+        pl.col("VEP_Consequence").is_null()
+        | (pl.col("VEP_Consequence").cast(pl.Utf8) == "")
+    )
+
+    placeholder_mask = df.select(is_placeholder).to_series()
+
+    if not placeholder_mask.any():
+        if verbose:
+            click.echo("  No placeholder rows found to merge.", err=True)
+        return df
+
+    # Work with rows as dicts for mutation
+    rows = df.to_dicts()
+    for i, row in enumerate(rows):
+        if not placeholder_mask[i]:
+            continue
+
+        # Build variant ID
+        chrom = str(row.get("#CHROM", ""))
+        pos = str(row.get("POS", ""))
+        ref = str(row.get("REF", ""))
+        alt = str(row.get("ALT", ""))
+        variant_id = f"{chrom}:{pos}:{ref}:{alt}"
+
+        # Get transcript base ID from VEP_Feature
+        vep_feature = row.get("VEP_Feature")
+        if vep_feature is None:
+            not_found += 1
+            if verbose:
+                click.echo(
+                    f"  Warning: Placeholder row {variant_id} has no VEP_Feature, skipping.",
+                    err=True,
+                )
+            continue
+
+        transcript_base = _transcript_base_id(str(vep_feature))
+        key = (variant_id, transcript_base)
+
+        # Lookup in VEP annotations
+        vep_data = lookup.get(key)
+        if vep_data is None:
+            not_found += 1
+            if verbose:
+                click.echo(
+                    f"  Warning: No VEP annotation found for {variant_id} "
+                    f"(transcript: {vep_feature})",
+                    err=True,
+                )
+            continue
+
+        # Fill VEP columns
+        for col in vep_cols_in_df:
+            if col in vep_data and vep_data[col] is not None:
+                rows[i][col] = vep_data[col]
+
+        filled += 1
+
+    # Rebuild DataFrame
+    result = pl.DataFrame(rows, schema=df.schema)
+
+    if verbose:
+        click.echo(
+            f"  Merged VEP annotations: {filled} filled, {not_found} not found",
+            err=True,
+        )
 
     return result

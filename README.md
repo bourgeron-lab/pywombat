@@ -196,6 +196,16 @@ wombat vep chr17:43094464:G:A -v
 
 **Variant format**: `chrN:POS:REF:ALT` (e.g., `chr1:151776102:GC:AA`, `chr17:43094464:G:A`)
 
+### `wombat merge-annotations` - Merge External VEP Annotations
+
+After running `wombat filter` with `annotate: external`, merge VEP annotations back:
+
+```bash
+wombat merge-annotations --tsv output.tsv --annotations output.annotated.tsv -o merged -v
+```
+
+See [External VEP Annotation Workflow](#external-vep-annotation-workflow) for the full three-step workflow.
+
 ### With Pedigree (Trio/Family Analysis)
 
 Add parent genotype information for inheritance analysis:
@@ -460,10 +470,10 @@ Enable MNV detection by adding the `mnv` section to your filter config:
 
 ```yaml
 mnv:
-  candidate: true      # Enable MNV candidate detection
-  indel_window: 10     # Window size for indel clustering (default: 10)
-  annotate: true       # Re-annotate MNV candidates via Ensembl VEP REST API
-  only: false          # Set to true to keep only MNV candidates in output
+  candidate: true        # Enable MNV candidate detection
+  indel_window: 10       # Window size for indel clustering (default: 10)
+  annotate: vep_api      # MNV annotation mode: false | vep_api | external
+  only: false            # Set to true to keep only MNV candidates in output
   # annotate_timeout: 30      # HTTP timeout for VEP API requests (default: 30s)
   # annotate_batch_size: 200  # Max variants per VEP API batch (default/max: 200)
   exclude_mhc:                # Exclude MHC region (noisy, unreliable calling)
@@ -472,6 +482,12 @@ mnv:
     start: 28510120           # GRCh38 xMHC start
     end: 33480577             # GRCh38 xMHC end
 ```
+
+**Annotation modes** (`annotate`):
+- `false` (default) — No annotation of MNV candidates
+- `vep_api` — Annotate via Ensembl VEP REST API (requires internet)
+- `external` — Produce a `.to_annotate.vcf` for offline VEP, then merge back with `wombat merge-annotations`
+- `true` — Backward compatible alias for `vep_api`
 
 ### Required Command-Line Options
 
@@ -562,9 +578,9 @@ See [examples/rare_homalt_mnv.yml](examples/rare_homalt_mnv.yml) for a complete 
 - MNV detection enabled with detailed comments
 - Usage examples and customization tips
 
-### Automatic MNV Annotation via VEP
+### MNV Annotation via VEP (`annotate: vep_api`)
 
-When `annotate: true` is set in the MNV config, PyWombat automatically:
+When `annotate: vep_api` (or `true`) is set in the MNV config, PyWombat automatically:
 
 1. Identifies SNV-based MNV candidates (rows with non-empty `mnv_variant`)
 2. Queries the Ensembl VEP REST API in batches (up to 200 variants per request)
@@ -581,6 +597,37 @@ When `annotate: true` is set in the MNV config, PyWombat automatically:
 This allows direct comparison of individual vs. combined variant annotations in a single output file.
 
 **Note**: Requires internet access to reach the Ensembl REST API. Only SNV-based MNVs are annotated (indel MNVs produce `mnv_inframe` but no reconstructed variant).
+
+### External VEP Annotation Workflow
+
+When cluster compute nodes lack internet access (e.g., at Institut Pasteur), use `annotate: external` for a three-step offline workflow:
+
+```yaml
+mnv:
+  candidate: true
+  annotate: external    # Produce VCF for offline VEP
+  only: true
+```
+
+**Step 1**: Filter with external annotation (on cluster, no internet needed):
+```bash
+wombat filter prepared.parquet -F config.yml --bcf cohort.bcf --fasta ref.fa -o output -v
+# Produces: output.tsv (with placeholder MNV rows) + output.to_annotate.vcf
+```
+
+**Step 2**: Run VEP externally (on a machine with VEP installed):
+```bash
+vep --input_file output.to_annotate.vcf --tab --output_file output.annotated.tsv \
+    --cache --offline --canonical --plugin LoF ...
+```
+
+**Step 3**: Merge annotations back (anywhere):
+```bash
+wombat merge-annotations --tsv output.tsv --annotations output.annotated.tsv -o merged -v
+# Produces: merged.tsv (complete with VEP annotations on MNV rows)
+```
+
+The placeholder rows have `VEP_Feature` preserved from the original variant for transcript matching, and all other VEP columns left null. The merge step fills them by matching `chr:pos:ref:alt` + transcript base ID.
 
 ### Downstream Analysis
 

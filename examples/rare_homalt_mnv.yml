@@ -67,12 +67,18 @@ mnv:
   # Set to true to detect multi-nucleotide variants
   candidate: true
 
-  # Re-annotate reconstructed MNV variants via Ensembl VEP REST API.
-  # When enabled, SNV-based MNV candidates (those with a non-empty mnv_variant)
-  # are sent to VEP for annotation. New rows are appended to the output with
-  # the MNV variant's VEP annotation, matching the same transcript (VEP_Feature)
-  # as the original variant. Requires internet access.
-  annotate: true
+  # Re-annotate reconstructed MNV variants via VEP.
+  # Options:
+  #   false    - No annotation (default)
+  #   vep_api  - Ensembl VEP REST API (requires internet access)
+  #   external - Produce .to_annotate.vcf for offline VEP, then use
+  #              'wombat merge-annotations' to merge results back
+  #
+  # When set to vep_api, SNV-based MNV candidates (those with a non-empty
+  # mnv_variant) are sent to VEP for annotation. New rows are appended to
+  # the output with the MNV variant's VEP annotation, matching the same
+  # transcript (VEP_Feature) as the original variant.
+  annotate: vep_api
 
   # Keep only MNV candidates in the output (default: false)
   # When true, removes all variants without an mnv_proba value,

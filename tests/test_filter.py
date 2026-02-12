@@ -571,3 +571,22 @@ class TestExcludeMHCFilter:
         # 30M is inside default MHC, 40M is outside
         assert result.shape[0] == 1
         assert result["POS"][0] == 40000000
+
+
+class TestNormalizeAnnotateMode:
+    """Test _normalize_annotate_mode in filter context."""
+
+    def test_backward_compat_true(self):
+        """annotate: true in YAML should work as vep_api."""
+        from pywombat.cli import _normalize_annotate_mode
+        assert _normalize_annotate_mode(True) == "vep_api"
+
+    def test_backward_compat_false(self):
+        """annotate: false in YAML should work."""
+        from pywombat.cli import _normalize_annotate_mode
+        assert _normalize_annotate_mode(False) == "false"
+
+    def test_external_mode(self):
+        """annotate: external should work."""
+        from pywombat.cli import _normalize_annotate_mode
+        assert _normalize_annotate_mode("external") == "external"
