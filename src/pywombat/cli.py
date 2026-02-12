@@ -1149,6 +1149,7 @@ def apply_de_novo_filter(
       - sample_dp_min, sample_gq_min, sample_vaf_min
       - parent_dp_min, parent_gq_min, parent_vaf_max
       - par_regions: dict with PAR regions keyed by assembly
+      - y_excluded_regions: dict with Y regions to skip (ampliconic/PAR/XTR)
 
     This function will read `sex` from `df` when present; otherwise it will use
     the `pedigree_df` (which should contain `sample_id` and `sex`).
@@ -1177,6 +1178,7 @@ def apply_de_novo_filter(
     genomes_filters_pass_only = dnm_config.get("genomes_filters_pass_only", False)
 
     par_regions = dnm_config.get("par_regions", {})
+    y_excluded_regions = dnm_config.get("y_excluded_regions", {})
 
     original = df.shape[0]
 
@@ -1292,6 +1294,34 @@ def apply_de_novo_filter(
                 )
 
     df = df.with_columns(par_mask.alias("_in_par"))
+
+    # Build Y excluded regions mask (ampliconic, PAR, XTR)
+    y_excluded_mask = pl.lit(False)
+    if y_excluded_regions:
+        for assembly, regions in y_excluded_regions.items():
+            for region_name, region in regions.items():
+                region_chrom = _chrom_short(region.get("chrom", "Y")).upper()
+                start = int(region.get("start"))
+                end = int(region.get("end"))
+                y_excluded_mask = y_excluded_mask | (
+                    (pl.col("_chrom_short") == region_chrom)
+                    & (pl.col("POS") >= start)
+                    & (pl.col("POS") <= end)
+                )
+    df = df.with_columns(y_excluded_mask.alias("_y_excluded"))
+
+    # Remove Y-excluded variants from DNM analysis
+    # These regions (ampliconic/PAR/XTR) produce unreliable variant calls and
+    # cannot be evaluated for de novo status
+    y_excluded_count = df.filter(pl.col("_y_excluded")).shape[0]
+    df = df.filter(~pl.col("_y_excluded"))
+
+    if verbose and y_excluded_count > 0:
+        click.echo(
+            f"DNM: Removed {y_excluded_count} variants in Y excluded regions "
+            f"(ampliconic/PAR/XTR)",
+            err=True,
+        )
 
     # Normalize sex to uppercase string for comparison
     df = df.with_columns(
@@ -1421,7 +1451,8 @@ def apply_de_novo_filter(
         )
 
     # Drop temporary columns
-    result = result.drop(["_chrom_short", "_in_par", "_sex_norm"])
+    temp_cols = ["_chrom_short", "_in_par", "_sex_norm", "_y_excluded"]
+    result = result.drop([c for c in temp_cols if c in result.columns])
 
     if verbose:
         click.echo(f"De novo filter: {original} -> {result.shape[0]} rows", err=True)

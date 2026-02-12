@@ -322,8 +322,11 @@ dnm:
 
 - **Autosomes & PAR**: Both parents must be 0/0 with VAF<2%
 - **X in males (non-PAR)**: Mother must be 0/0, father not informative
-- **Y in males**: Father must be 0/0, mother N/A
+- **Y in males** (outside excluded regions): Father must be 0/0, mother N/A
+- **Y excluded regions** (ampliconic/PAR/XTR): Removed from DNM output (unreliable)
 - **Hemizygous variants**: Require VAF ≥ 85%
+
+**Y Chromosome Exclusion**: Variants in Y ampliconic palindromes (P1-P8), PAR, and XTR regions are unreliable for variant calling and are automatically excluded from de novo evaluation when `y_excluded_regions` is configured. GRCh38 coordinates are provided in the example config. See [doi:10.1101/2025.04.29.651297](https://doi.org/10.1101/2025.04.29.651297) for reference.
 
 ### 3. Recessive Disease Analysis (Homozygous Alternative Only)
 

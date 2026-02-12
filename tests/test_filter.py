@@ -590,3 +590,181 @@ class TestNormalizeAnnotateMode:
         """annotate: external should work."""
         from pywombat.cli import _normalize_annotate_mode
         assert _normalize_annotate_mode("external") == "external"
+
+
+class TestYExcludedRegions:
+    """Test Y chromosome excluded regions (ampliconic, PAR, XTR) in DNM filter."""
+
+    @staticmethod
+    def _make_dnm_data(chroms, positions):
+        """Create minimal test data for DNM filter with Y chromosome variants."""
+        n = len(chroms)
+        return pl.DataFrame({
+            "#CHROM": chroms,
+            "POS": positions,
+            "sample": ["Sample1"] * n,
+            "sample_gt": ["0/1"] * n,
+            "sample_dp": [30] * n,
+            "sample_gq": [50] * n,
+            "sample_vaf": [0.45] * n,
+            "father_id": ["Father1"] * n,
+            "mother_id": ["Mother1"] * n,
+            "father_gt": ["0/0"] * n,
+            "father_dp": [25] * n,
+            "father_gq": [50] * n,
+            "father_vaf": [0.01] * n,
+            "mother_gt": ["0/0"] * n,
+            "mother_dp": [22] * n,
+            "mother_gq": [50] * n,
+            "mother_vaf": [0.01] * n,
+            "sex": ["1"] * n,  # Male proband
+        })
+
+    @staticmethod
+    def _y_excluded_config():
+        """Return a DNM config with Y excluded regions."""
+        return {
+            "sample_dp_min": 10,
+            "sample_gq_min": 18,
+            "sample_vaf_min": 0.2,
+            "sample_vaf_hemizygous_min": 0.85,
+            "parent_dp_min": 10,
+            "parent_gq_min": 18,
+            "parent_vaf_max": 0.02,
+            "y_excluded_regions": {
+                "grch38": {
+                    "Y_PAR1": {"chrom": "Y", "start": 10001, "end": 2781479},
+                    "Y_XTR1": {"chrom": "Y", "start": 3050044, "end": 6235111},
+                    "Y_Ampliconic1": {"chrom": "Y", "start": 6235111, "end": 6532906},
+                    "Y_XTR2": {"chrom": "Y", "start": 6532906, "end": 6748713},
+                    "Y_Ampliconic2": {"chrom": "Y", "start": 7574481, "end": 10266944},
+                    "Y_PAR2": {"chrom": "Y", "start": 56987321, "end": 57217415},
+                }
+            },
+        }
+
+    def test_y_ampliconic_variants_removed_from_dnm(self):
+        """Y ampliconic variants are removed from DNM output."""
+        from pywombat.cli import apply_de_novo_filter
+
+        # Variant in Y ampliconic region (pos 8000000 is inside Y_Ampliconic2: 7574481-10266944)
+        # Plus one autosomal variant
+        data = self._make_dnm_data(
+            ["chr1", "chrY"],
+            [100, 8000000],
+        )
+        config = self._y_excluded_config()
+
+        result = apply_de_novo_filter(data, config, verbose=False, skip_prefilters=True)
+
+        # Only autosomal variant should remain; Y ampliconic removed
+        assert result.shape[0] == 1, \
+            f"Expected 1 row (autosomal only, Y ampliconic removed), got {result.shape[0]}"
+        assert result["POS"][0] == 100
+
+    def test_y_par_variants_removed_from_dnm(self):
+        """Y PAR variants are removed from DNM (already evaluated on X)."""
+        from pywombat.cli import apply_de_novo_filter
+
+        # Variant in Y PAR1 (pos 100000 is inside Y_PAR1: 10001-2781479)
+        data = self._make_dnm_data(
+            ["chr1", "chrY"],
+            [100, 100000],
+        )
+        config = self._y_excluded_config()
+
+        result = apply_de_novo_filter(data, config, verbose=False, skip_prefilters=True)
+
+        # Only autosomal variant should remain; Y PAR removed
+        assert result.shape[0] == 1, \
+            f"Expected 1 row (autosomal only, Y PAR removed), got {result.shape[0]}"
+        assert result["POS"][0] == 100
+
+    def test_y_xtr_variants_removed_from_dnm(self):
+        """Y XTR variants are removed from DNM output."""
+        from pywombat.cli import apply_de_novo_filter
+
+        # Variant in Y XTR1 (pos 4000000 is inside Y_XTR1: 3050044-6235111)
+        data = self._make_dnm_data(
+            ["chr1", "chrY"],
+            [100, 4000000],
+        )
+        config = self._y_excluded_config()
+
+        result = apply_de_novo_filter(data, config, verbose=False, skip_prefilters=True)
+
+        # Only autosomal variant should remain; Y XTR removed
+        assert result.shape[0] == 1, \
+            f"Expected 1 row (autosomal only, Y XTR removed), got {result.shape[0]}"
+        assert result["POS"][0] == 100
+
+    def test_non_y_excluded_variants_filtered_normally(self):
+        """Y variants outside excluded regions still go through DNM filter."""
+        from pywombat.cli import apply_de_novo_filter
+
+        # Y variant outside any excluded region (pos 12000000 is between
+        # Y_Ampliconic2 end 10266944 and Y_Ampliconic3 start 13984473)
+        # This variant should be evaluated normally by DNM logic.
+        # With a male proband, Y requires father to be 0/0 (which it is), so it passes.
+        data = self._make_dnm_data(
+            ["chrY"],
+            [12000000],
+        )
+        # Make it hemizygous-like VAF for proper Y evaluation
+        data = data.with_columns(pl.lit(0.95).alias("sample_vaf"))
+        config = self._y_excluded_config()
+
+        result = apply_de_novo_filter(data, config, verbose=False, skip_prefilters=True)
+
+        # Should pass DNM filter (father is 0/0 with low VAF)
+        assert result.shape[0] == 1, \
+            f"Expected 1 row (Y non-excluded passes DNM), got {result.shape[0]}"
+        assert result["POS"][0] == 12000000
+
+    def test_no_y_excluded_regions_config(self):
+        """When config omits y_excluded_regions, behavior is unchanged."""
+        from pywombat.cli import apply_de_novo_filter
+
+        # Y variant in ampliconic region, but NO y_excluded_regions in config
+        data = self._make_dnm_data(
+            ["chr1", "chrY"],
+            [100, 8000000],
+        )
+        # Make Y variant hemizygous-like
+        data = data.with_columns(
+            pl.when(pl.col("#CHROM") == "chrY")
+            .then(0.95)
+            .otherwise(pl.col("sample_vaf"))
+            .alias("sample_vaf")
+        )
+        config = {
+            "sample_dp_min": 10,
+            "sample_gq_min": 18,
+            "sample_vaf_min": 0.2,
+            "sample_vaf_hemizygous_min": 0.85,
+            "parent_dp_min": 10,
+            "parent_gq_min": 18,
+            "parent_vaf_max": 0.02,
+            # No y_excluded_regions
+        }
+
+        result = apply_de_novo_filter(data, config, verbose=False, skip_prefilters=True)
+
+        # Both should pass normally through DNM filter
+        assert result.shape[0] == 2, \
+            f"Expected 2 rows (no Y exclusion configured), got {result.shape[0]}"
+
+    def test_y_excluded_verbose_message(self, capsys):
+        """Verbose mode prints removal count for Y excluded regions."""
+        from pywombat.cli import apply_de_novo_filter
+
+        data = self._make_dnm_data(
+            ["chr1", "chrY", "chrY"],
+            [100, 8000000, 100000],
+        )
+        config = self._y_excluded_config()
+
+        apply_de_novo_filter(data, config, verbose=True, skip_prefilters=True)
+
+        captured = capsys.readouterr()
+        assert "Removed 2 variants in Y excluded regions" in captured.err

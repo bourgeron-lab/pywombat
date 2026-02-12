@@ -6,6 +6,7 @@
 #   - Requiring the variant in the proband (child)
 #   - Confirming absence in both parents (with appropriate VAF thresholds)
 #   - Accounting for sex chromosomes (X/Y) and pseudo-autosomal regions (PAR)
+#   - Excluding unreliable Y chromosome regions (ampliconic, XTR, PAR)
 #   - Applying stringent quality filters and frequency thresholds
 #
 # IMPORTANT: Requires pedigree file with --pedigree option
@@ -100,6 +101,67 @@ dnm:
   #     chrom: X
   #     start: 154931044
   #     end: 155260560
+
+  # --- Y Chromosome Excluded Regions ---
+
+  # Regions on chrY to exclude from DNM analysis.
+  # Variants in these regions are removed from DNM output (unreliable for de novo evaluation).
+  #
+  # Rationale:
+  #   - Y PAR regions are already evaluated on the X chromosome (redundant)
+  #   - Y ampliconic regions (palindromes P1-P8) have highly repetitive structures
+  #     that produce unreliable variant calls
+  #   - Y XTR (X-transposed) regions have high homology with chrX, also unreliable
+  #
+  # Coordinates: GRCh38/hg38, from SexChrLab chrY genomic features BED file
+  # Reference: https://doi.org/10.1101/2025.04.29.651297
+
+  y_excluded_regions:
+    grch38:
+      Y_PAR1:
+        chrom: Y
+        start: 10001
+        end: 2781479
+      Y_XTR1:
+        chrom: Y
+        start: 3050044
+        end: 6235111
+      Y_Ampliconic1:
+        chrom: Y
+        start: 6235111
+        end: 6532906
+      Y_XTR2:
+        chrom: Y
+        start: 6532906
+        end: 6748713
+      Y_Ampliconic2:
+        chrom: Y
+        start: 7574481
+        end: 10266944
+      Y_Ampliconic3:
+        chrom: Y
+        start: 13984473
+        end: 14058733
+      Y_Ampliconic4:
+        chrom: Y
+        start: 15875093
+        end: 15905214
+      Y_Ampliconic5:
+        chrom: Y
+        start: 16159795
+        end: 16425965
+      Y_Ampliconic6:
+        chrom: Y
+        start: 17456266
+        end: 18870334
+      Y_Ampliconic7:
+        chrom: Y
+        start: 21305953
+        end: 26415435
+      Y_PAR2:
+        chrom: Y
+        start: 56987321
+        end: 57217415
 # ----------------------------------------------------------------------------
 # De Novo Detection Logic
 # ----------------------------------------------------------------------------
@@ -116,10 +178,16 @@ dnm:
 #   - Father: not informative (doesn't transmit X to son)
 #   - Mother: homozygous reference (0/0) with VAF < 2%
 #
-# Y chromosome in males:
+# Y chromosome in males (outside excluded regions):
 #   - Proband: hemizygous (single copy, VAF ≥ 85%)
 #   - Father: homozygous reference (0/0) with VAF < 2%
 #   - Mother: not applicable (no Y chromosome)
+#
+# Y chromosome excluded regions (ampliconic/PAR/XTR):
+#   - Variants are removed from DNM output (unreliable for de novo evaluation)
+#   - Y PAR regions overlap with X PAR (already evaluated)
+#   - Ampliconic palindromes (P1-P8) have unreliable variant calling
+#   - XTR regions have high homology with chrX
 #
 # X chromosome in females:
 #   - Proband: heterozygous or homozygous for alternate allele

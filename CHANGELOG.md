@@ -5,6 +5,17 @@ All notable changes to PyWombat will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1] - 2026-02-12
+
+### Added
+
+- **Y chromosome excluded regions in DNM filter** (`dnm.y_excluded_regions`):
+  - Variants in Y ampliconic (palindromes P1-P8), PAR, and XTR regions are removed from DNM output (unreliable for de novo evaluation)
+  - Y PAR regions are already evaluated on the X chromosome (redundant)
+  - Y ampliconic and XTR regions produce unreliable variant calls due to repetitive/homologous structures
+  - GRCh38 coordinates from SexChrLab chrY genomic features (ref: https://doi.org/10.1101/2025.04.29.651297)
+  - Configurable via `y_excluded_regions` in DNM YAML config
+
 ## [1.6.0] - 2026-02-12
 
 ### Added

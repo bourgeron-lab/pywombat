@@ -6,7 +6,7 @@ This document provides context and guidelines for AI assistants working on the p
 
 **PyWombat** is a high-performance CLI tool for processing and filtering bcftools tabulated TSV files with advanced filtering capabilities, pedigree support, and de novo mutation (DNM) detection.
 
-- **Version**: 1.6.0 (current)
+- **Version**: 1.6.1 (current)
 - **Python**: 3.12+
 - **License**: MIT
 - **Repository**: https://github.com/bourgeron-lab/pywombat
@@ -302,9 +302,15 @@ X chromosome (males, non-PAR):
   - Mother must be 0/0
   - Father not informative
 
-Y chromosome (males):
+Y chromosome (males, outside excluded regions):
   - Father must be 0/0
   - Mother N/A
+
+Y chromosome excluded regions (ampliconic/PAR/XTR):
+  - Variants removed from DNM output (unreliable for de novo evaluation)
+  - Y PAR already evaluated on X (redundant)
+  - Ampliconic palindromes (P1-P8) have unreliable variant calling
+  - XTR regions have high homology with chrX
 
 Hemizygous variants:
   - VAF must be ≥ 85% (configurable)
@@ -324,6 +330,12 @@ dnm:
     grch38:
       PAR1: {chrom: X, start: 10000, end: 2781479}
       PAR2: {chrom: X, start: 155701383, end: 156030895}
+  y_excluded_regions:  # Regions on chrY to skip from DNM analysis
+    grch38:
+      Y_PAR1: {chrom: Y, start: 10001, end: 2781479}
+      Y_XTR1: {chrom: Y, start: 3050044, end: 6235111}
+      Y_Ampliconic1: {chrom: Y, start: 6235111, end: 6532906}
+      # ... (see examples/de_novo_mutations.yml for full list)
 ```
 
 ### 4. MNV (Multi-Nucleotide Variant) Detection
@@ -944,7 +956,7 @@ uv run pytest --cov=pywombat --cov-report=html
 | `src/pywombat/vep.py` | VEP annotation + merge | `parse_variant`, `query_vep`, `extract_annotations`, `annotate_mnv_variants`, `create_mnv_placeholders_and_vcf`, `parse_vep_annotation_file`, `merge_vep_annotations` |
 | `pyproject.toml` | Project config | Version, dependencies, build config |
 | `examples/rare_homalt.yml` | Recessive analysis | homalt_only filter |
-| `examples/de_novo_mutations.yml` | DNM config | DNM settings with PAR regions |
+| `examples/de_novo_mutations.yml` | DNM config | DNM settings with PAR regions and Y excluded regions |
 | `examples/rare_homalt_mnv.yml` | Homozygous + MNV | Combined filtering + MNV VEP annotation |
 
 ---
