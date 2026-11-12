@@ -5,6 +5,19 @@ All notable changes to PyWombat will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.3] - 2026-11-12
+
+### Fixed
+
+- **Polars 2 compatibility**: `wombat filter` failed under polars 2.x, which removed
+  APIs pywombat still called. `LazyFrame.collect(streaming=True)` is now
+  `collect(engine="streaming")`, `DataFrame.melt` is now `DataFrame.unpivot`, and the
+  DNM verbose row count uses `pl.len()` instead of `pl.count()`. Outputs are unchanged.
+
+### Changed
+
+- Requires `polars>=1.30.0` (was `>=0.19.0`), the oldest release tested to work.
+
 ## [1.6.2] - 2026-11-12
 
 ### Fixed

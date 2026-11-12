@@ -6,7 +6,7 @@ This document provides context and guidelines for AI assistants working on the p
 
 **PyWombat** is a high-performance CLI tool for processing and filtering bcftools tabulated TSV files with advanced filtering capabilities, pedigree support, and de novo mutation (DNM) detection.
 
-- **Version**: 1.6.2 (current)
+- **Version**: 1.6.3 (current)
 - **Python**: 3.12+
 - **License**: MIT
 - **Repository**: https://github.com/bourgeron-lab/pywombat

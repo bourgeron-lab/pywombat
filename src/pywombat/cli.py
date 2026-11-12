@@ -355,7 +355,7 @@ def process_dnm_by_chromosome(
 
         # Count variants after prefiltering
         if verbose:
-            pre_count = lazy_df.select(pl.count()).collect().item()
+            pre_count = lazy_df.select(pl.len()).collect().item()
             click.echo(f"  Chromosome {chrom}: {pre_count} variants after prefilter", err=True)
 
         # Collect, melt, and apply DNM filters
@@ -2248,9 +2248,9 @@ def format_bcftools_tsv_minimal(
     df = df.rename(rename_map)
 
     # Melt the dataframe
-    melted_df = df.melt(
-        id_vars=id_vars,
-        value_vars=sample_names,
+    melted_df = df.unpivot(
+        index=id_vars,
+        on=sample_names,
         variable_name="sample",
         value_name="sample_value",
     )
@@ -2361,7 +2361,7 @@ def format_bcftools_tsv_lazy(
     """
     # For complex transformations like melting, we need to collect temporarily
     # but we do this in a streaming fashion
-    df = lazy_df.collect(streaming=True)
+    df = lazy_df.collect(engine="streaming")
     formatted_df = format_bcftools_tsv(df, pedigree_df)
     return formatted_df.lazy()
 
@@ -2858,7 +2858,7 @@ def apply_filters_lazy(
         dnm_cfg.update(filter_config.get("dnm", {}))
 
         # Collect minimally and apply DNM filter eagerly, then return lazy frame
-        df = lazy_df.collect(streaming=True)
+        df = lazy_df.collect(engine="streaming")
         filtered_df = apply_de_novo_filter(
             df, dnm_cfg, verbose, pedigree_df=pedigree_df
         )
@@ -2980,7 +2980,7 @@ def apply_filters_lazy(
             click.echo(f"Applying expression filter: {expression}", err=True)
 
         # We need to collect temporarily to use parse_impact_filter_expression
-        df = lazy_df.collect(streaming=True)
+        df = lazy_df.collect(engine="streaming")
         filter_expr = parse_impact_filter_expression(expression, df)
         lazy_df = df.lazy().filter(filter_expr)
 

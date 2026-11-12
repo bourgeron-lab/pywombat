@@ -1,12 +1,12 @@
 [project]
 name = "pywombat"
-version = "1.6.2"
+version = "1.6.3"
 description = "A CLI tool for processing and filtering bcftools tabulated TSV files with pedigree support"
 readme = "README.md"
 authors = [{ name = "Freddy Cliquet", email = "fcliquet@pasteur.fr" }]
 requires-python = ">=3.12"
 dependencies = [
-    "polars>=0.19.0",
+    "polars>=1.30.0",
     "pyarrow>=14.0.0",
     "click>=8.1.0",
     "pyyaml>=6.0",
