@@ -1898,6 +1898,42 @@ def apply_filters_and_write(
         )
 
 
+# Column names that only a header line holds: a member's row has a family ID, sample
+# IDs, a sex code and a phenotype, none of which is one of these.
+_PEDIGREE_HEADER_NAMES = {
+    "fid",
+    "iid",
+    "sample_id",
+    "father_id",
+    "mother_id",
+    "fatherbarcode",
+    "motherbarcode",
+    "sex",
+}
+
+
+def _first_pedigree_line(pedigree_path: Path) -> str:
+    """The first non-blank line of a pedigree file, without its line ending."""
+    with open(pedigree_path) as handle:
+        for line in handle:
+            line = line.rstrip("\r\n")
+            if line.strip():
+                return line
+    return ""
+
+
+def _pedigree_has_header(pedigree_path: Path) -> bool:
+    """
+    Whether the pedigree file's first line is a header rather than a member.
+
+    A pedigree may come with or without a header. Reading a headerless one as if it
+    had a header loses its first member, whose parents and sex then never reach the
+    output (so a child listed first gets no de novo calls).
+    """
+    fields = _first_pedigree_line(pedigree_path).lstrip("#").split("\t")
+    return any(f.strip().lower() in _PEDIGREE_HEADER_NAMES for f in fields)
+
+
 def read_pedigree(pedigree_path: Path) -> pl.DataFrame:
     """
     Read a pedigree file and return a DataFrame with sample relationships.
@@ -1908,7 +1944,6 @@ def read_pedigree(pedigree_path: Path) -> pl.DataFrame:
     Returns:
         DataFrame with columns: sample_id, father_id, mother_id
     """
-    # Try reading with header first
     # Force certain columns to string type
     string_columns = [
         "FID",
@@ -1920,16 +1955,26 @@ def read_pedigree(pedigree_path: Path) -> pl.DataFrame:
         "sample",
     ]
     schema_overrides = {col: pl.Utf8 for col in string_columns}
-    df = pl.read_csv(pedigree_path, separator="\t", schema_overrides=schema_overrides)
 
-    # Check if first row has 'FID' in first column (indicates header)
-    if df.columns[0] == "FID" or "sample_id" in df.columns:
-        # Has header - use it as-is
-        pass
+    if _pedigree_has_header(pedigree_path):
+        df = pl.read_csv(
+            pedigree_path, separator="\t", schema_overrides=schema_overrides
+        )
     else:
-        # No header - assume standard pedigree format
-        # FID, sample_id, father_id, mother_id, sex, phenotype
-        df.columns = ["FID", "sample_id", "father_id", "mother_id", "sex", "phenotype"]
+        # No header: the first line is a member and must be read as data, so the
+        # standard pedigree columns are named by position
+        # (FID, sample_id, father_id, mother_id, sex, phenotype)
+        n_cols = len(_first_pedigree_line(pedigree_path).split("\t"))
+        names = ["FID", "sample_id", "father_id", "mother_id", "sex", "phenotype"]
+        names += [f"column_{i + 1}" for i in range(len(names), n_cols)]
+        names = names[:n_cols]
+        df = pl.read_csv(
+            pedigree_path,
+            separator="\t",
+            has_header=False,
+            new_columns=names,
+            schema_overrides={c: pl.Utf8 for c in names[:4]},
+        )
 
     # Ensure we have the required columns (try different possible names)
     if "sample_id" not in df.columns and len(df.columns) >= 4:

@@ -5,6 +5,17 @@ All notable changes to PyWombat will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.2] - 2026-11-12
+
+### Fixed
+
+- **Headerless pedigree files lost their first member**: `read_pedigree` always read the
+  first line as column names, so in a pedigree without a header the member on line 1 was
+  dropped. Their parents and sex never reached the output, and a child listed first got
+  no de novo calls. The first line is now taken as a header only when it holds a known
+  column name (`FID`, `IID`, `sample_id`, `FatherBarcode`, `sex`, ...); otherwise it is
+  read as a member and the columns are named by position.
+
 ## [1.6.1] - 2026-02-12
 
 ### Added
