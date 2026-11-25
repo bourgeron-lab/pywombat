@@ -699,6 +699,18 @@ The following columns are considered stable and can be relied upon by downstream
 | `mnv_proba` | MNV detection enabled | Phasing probability (0.0–1.0) |
 | `mnv_inframe` | MNV detection enabled | Whether combined indels maintain reading frame |
 | `mnv_variant` | MNV detection enabled | Reconstructed MNV notation for SNVs |
+| `acmg_ruleset` | `--acmg-ruleset` provided | Ruleset name and pywombat version (e.g. `acmg-svi-2024.1/pywombat-1.7.0`) |
+| `acmg_freq` | `--acmg-ruleset` provided | Frequency status: `absent`, `absent_low_coverage`, `rare`, or `BA1` |
+| `acmg_pp3_bp4` | `--acmg-ruleset` provided | Missense predictor evidence with score (e.g. `PP3_Moderate:REVEL=0.81`) |
+| `acmg_splice` | `--acmg-ruleset` provided | Splice evidence (e.g. `PP3_Supporting:SpliceAI=0.34`) |
+| `acmg_bp7` | `--acmg-ruleset` provided | `BP7` when synonymous/deep intronic with low SpliceAI |
+| `acmg_pm4_bp3` | `--acmg-ruleset` provided | `PM4_candidate` or `BP3_candidate` for in-frame variants |
+| `acmg_pvs1` | `--acmg-ruleset` provided | PVS1 candidate strength or `review:<reason>` for null-consequence variants |
+| `acmg_denovo` | `--acmg-ruleset` + pedigree | Inheritance status: `de_novo`, `inherited_paternal`, `inherited_maternal`, `inherited_both`, `not_testable:<reason>` |
+| `acmg_partners` | `--acmg-ruleset` provided | Other rare variants in the same gene for this sample, with phase (e.g. `chr2:166245012:G:A(trans)`) |
+| `acmg_criteria` | `--acmg-ruleset` provided | Computed criteria, semicolon-joined (e.g. `PM2_Supporting?;PP3_Moderate`) |
+| `acmg_points_auto` | `--acmg-ruleset` provided | Sum of scored criteria (partial by construction) |
+| `acmg_missing` | `--acmg-ruleset` provided | Input columns absent from this table (e.g. `REVEL`) |
 
 All VEP annotation columns (prefixed `VEP_`) and INFO fields extracted from the input are passed through but are not part of this contract — their presence depends on the input file.
 

@@ -4,6 +4,9 @@ import polars as pl
 import pytest
 from pathlib import Path
 
+from click.testing import CliRunner
+
+from pywombat.cli import cli
 from pywombat.acmg import (
     annotate_acmg,
     load_ruleset,
@@ -1187,3 +1190,119 @@ class TestAnnotateACMGPartners:
         })
         result = annotate_acmg(df, default_ruleset)
         assert "VEP_SYMBOL" in result["acmg_missing"][0]
+
+
+def _write_filtered_tsv(path, rows=None):
+    """Write a minimal filtered-output TSV (melted format) for acmg command tests."""
+    if rows is None:
+        rows = [
+            "chr1\t100\tA\tT\t.\tSample1\t0/1\t20\t99\t5\t0.25\tmissense_variant\tGENE1\tYES\t0.75\t0.3",
+        ]
+    header = (
+        "#CHROM\tPOS\tREF\tALT\tFILTER\tsample\tsample_gt\tsample_dp\tsample_gq\t"
+        "sample_ad\tsample_vaf\tVEP_Consequence\tVEP_SYMBOL\tVEP_CANONICAL\tREVEL\tSpliceAI_maxDS"
+    )
+    path.write_text("\n".join([header] + rows) + "\n")
+    return path
+
+
+class TestAcmgCommand:
+    def test_basic_annotation(self, tmp_path):
+        tsv = _write_filtered_tsv(tmp_path / "input.tsv")
+        out = str(tmp_path / "output")
+        result = CliRunner().invoke(cli, ["acmg", str(tsv), "-o", out])
+        assert result.exit_code == 0, f"Command failed: {result.output}"
+
+        df = pl.read_csv(tmp_path / "output.tsv", separator="\t", infer_schema=False)
+        assert "acmg_ruleset" in df.columns
+        assert "acmg_freq" in df.columns
+        assert "acmg_criteria" in df.columns
+        assert df["acmg_ruleset"][0].startswith("acmg-svi-2024.1/pywombat-")
+
+    def test_strips_existing_acmg_columns(self, tmp_path):
+        header = (
+            "#CHROM\tPOS\tREF\tALT\tFILTER\tsample\tsample_gt\tsample_dp\tsample_gq\t"
+            "sample_ad\tsample_vaf\tVEP_Consequence\tVEP_SYMBOL\tVEP_CANONICAL\tREVEL\t"
+            "SpliceAI_maxDS\tacmg_ruleset\tacmg_freq\tacmg_criteria"
+        )
+        row = (
+            "chr1\t100\tA\tT\t.\tSample1\t0/1\t20\t99\t5\t0.25\tmissense_variant\t"
+            "GENE1\tYES\t0.75\t0.3\told-ruleset/pywombat-1.0.0\trare\tPP3_Moderate"
+        )
+        tsv = tmp_path / "input.tsv"
+        tsv.write_text(header + "\n" + row + "\n")
+
+        out = str(tmp_path / "output")
+        result = CliRunner().invoke(cli, ["acmg", str(tsv), "-o", out, "-v"])
+        assert result.exit_code == 0, f"Command failed: {result.output}"
+        assert "Stripping 3 existing acmg_* columns" in result.output
+
+        df = pl.read_csv(tmp_path / "output.tsv", separator="\t", infer_schema=False)
+        assert df["acmg_ruleset"][0].startswith("acmg-svi-2024.1/pywombat-")
+
+    def test_parquet_input(self, tmp_path):
+        tsv = _write_filtered_tsv(tmp_path / "input.tsv")
+        df = pl.read_csv(tsv, separator="\t")
+        pq = tmp_path / "input.parquet"
+        df.write_parquet(pq)
+
+        out = str(tmp_path / "output")
+        result = CliRunner().invoke(cli, ["acmg", str(pq), "-o", out])
+        assert result.exit_code == 0, f"Command failed: {result.output}"
+
+        result_df = pl.read_csv(tmp_path / "output.tsv", separator="\t", infer_schema=False)
+        assert "acmg_ruleset" in result_df.columns
+
+    def test_default_output_name(self, tmp_path, monkeypatch):
+        tsv = _write_filtered_tsv(tmp_path / "mydata.tsv")
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(cli, ["acmg", str(tsv)])
+        assert result.exit_code == 0, f"Command failed: {result.output}"
+        assert (tmp_path / "mydata.acmg.tsv").exists()
+
+    def test_output_format_parquet(self, tmp_path):
+        tsv = _write_filtered_tsv(tmp_path / "input.tsv")
+        out = str(tmp_path / "output")
+        result = CliRunner().invoke(cli, ["acmg", str(tsv), "-o", out, "-f", "parquet"])
+        assert result.exit_code == 0, f"Command failed: {result.output}"
+
+        result_df = pl.read_parquet(tmp_path / "output.parquet")
+        assert "acmg_ruleset" in result_df.columns
+
+    def test_verbose_output(self, tmp_path):
+        tsv = _write_filtered_tsv(tmp_path / "input.tsv")
+        out = str(tmp_path / "output")
+        result = CliRunner().invoke(cli, ["acmg", str(tsv), "-o", out, "-v"])
+        assert result.exit_code == 0, f"Command failed: {result.output}"
+        assert "Reading input file" in result.output
+        assert "Annotating ACMG evidence" in result.output
+
+    def test_acmg_help(self):
+        result = CliRunner().invoke(cli, ["acmg", "--help"])
+        assert result.exit_code == 0
+        assert "Re-annotate ACMG evidence" in result.output
+        assert "--ruleset" in result.output
+        assert "--pedigree" in result.output
+
+    def test_with_dnm_config(self, tmp_path):
+        rows = [
+            "chr1\t100\tA\tT\t.\tChild1\t0/1\t20\t99\t5\t0.25\tmissense_variant\tGENE1\tYES\t0.75\t0.3",
+        ]
+        tsv = _write_filtered_tsv(tmp_path / "input.tsv", rows)
+
+        config = tmp_path / "config.yml"
+        config.write_text(
+            "dnm:\n"
+            "  enabled: true\n"
+            "  parent_dp_min: 10\n"
+            "  parent_gq_min: 18\n"
+            "  parent_vaf_max: 0.02\n"
+        )
+
+        out = str(tmp_path / "output")
+        result = CliRunner().invoke(
+            cli, ["acmg", str(tsv), "-o", out, "--dnm-config", str(config)]
+        )
+        assert result.exit_code == 0, f"Command failed: {result.output}"
+        df = pl.read_csv(tmp_path / "output.tsv", separator="\t", infer_schema=False)
+        assert "acmg_denovo" in df.columns

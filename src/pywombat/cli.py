@@ -110,6 +110,7 @@ def cli():
     Commands:
         filter             Process and filter variant data
         prepare            Convert TSV to optimized Parquet format
+        acmg               Re-annotate ACMG evidence on an existing table
         vep                Annotate variant using Ensembl VEP REST API
         merge-annotations  Merge external VEP annotations into filtered TSV
     """
@@ -576,6 +577,123 @@ def debug_variant(
 
     click.echo(f"\nFound {matching_rows.shape[0]} row(s) matching {chrom}:{pos}:\n")
     click.echo(display_df.write_csv(separator="\t"))
+
+
+@cli.command("acmg")
+@click.argument("input_file", type=click.Path(exists=True, path_type=Path))
+@click.option(
+    "-o",
+    "--output",
+    type=str,
+    help="Output file prefix. If not specified, generates from input filename.",
+)
+@click.option(
+    "-f",
+    "--format",
+    "output_format",
+    type=click.Choice(["tsv", "tsv.gz", "parquet"], case_sensitive=False),
+    default="tsv",
+    help="Output format: tsv (default), tsv.gz (compressed), or parquet.",
+)
+@click.option("-v", "--verbose", is_flag=True, help="Enable verbose output.")
+@click.option(
+    "-p",
+    "--pedigree",
+    type=click.Path(exists=True, path_type=Path),
+    help="Pedigree file (needed for de novo labeling and partner phasing).",
+)
+@click.option(
+    "--ruleset",
+    type=str,
+    default="acmg-svi-2024.1",
+    help="ACMG ruleset: built-in name (e.g. acmg-svi-2024.1) or path to YAML.",
+)
+@click.option(
+    "--dnm-config",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Filter YAML with dnm section (for PAR/Y region thresholds).",
+)
+def acmg_cmd(
+    input_file: Path,
+    output: Optional[str],
+    output_format: str,
+    verbose: bool,
+    pedigree: Optional[Path],
+    ruleset: str,
+    dnm_config: Optional[Path],
+):
+    """
+    Re-annotate ACMG evidence on an existing filtered table.
+
+    \b
+    Runs the ACMG evidence module on a previously filtered output,
+    so a new ruleset or updated logic doesn't require re-filtering.
+    Any existing acmg_* columns are stripped before re-annotation.
+
+    \b
+    The table must already be in melted format (one row per variant×sample),
+    as produced by 'wombat filter'.
+
+    \b
+    Examples:
+        wombat acmg output.tsv --ruleset acmg-svi-2024.1 -o reannotated
+        wombat acmg output.parquet -p pedigree.tsv -o reannotated -v
+        wombat acmg output.tsv --dnm-config config.yml -o reannotated
+    """
+    try:
+        if verbose:
+            click.echo(f"Reading input file: {input_file}", err=True)
+
+        is_parquet = str(input_file).endswith(".parquet")
+
+        if is_parquet:
+            df = pl.read_parquet(input_file)
+        else:
+            string_columns = [
+                "FID", "sample_id", "father_id", "mother_id",
+                "FatherBarcode", "MotherBarcode", "sample",
+            ]
+            schema_overrides = {col: pl.Utf8 for col in string_columns}
+            df = pl.read_csv(
+                input_file, separator="\t", schema_overrides=schema_overrides
+            )
+
+        if verbose:
+            click.echo(f"  {df.height} rows, {df.width} columns", err=True)
+
+        acmg_cols = [c for c in df.columns if c.startswith("acmg_")]
+        if acmg_cols:
+            if verbose:
+                click.echo(f"  Stripping {len(acmg_cols)} existing acmg_* columns", err=True)
+            df = df.drop(acmg_cols)
+
+        loaded_ruleset = load_ruleset(ruleset)
+        if verbose:
+            click.echo(
+                f"Annotating ACMG evidence ({loaded_ruleset.get('name', ruleset)})...",
+                err=True,
+            )
+
+        dnm_cfg = None
+        if dnm_config:
+            dnm_cfg = load_filter_config(dnm_config).get("dnm")
+
+        df = annotate_acmg(df, loaded_ruleset, dnm_config=dnm_cfg)
+
+        if output is None:
+            input_stem = input_file.name
+            for ext in [".tsv.gz", ".tsv", ".parquet"]:
+                if input_stem.endswith(ext):
+                    input_stem = input_stem[: -len(ext)]
+                    break
+            output = f"{input_stem}.acmg"
+
+        write_output(df, output, output_format, verbose)
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        raise click.Abort()
 
 
 @cli.command("vep")
