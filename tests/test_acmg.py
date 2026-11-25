@@ -13,6 +13,8 @@ from pywombat.acmg import (
     _bp7,
     _pm4_bp3,
     _denovo_status,
+    _phase_pair,
+    _find_partners,
     _parse_intron_offset,
     _has_consequence,
 )
@@ -688,3 +690,247 @@ class TestDenovoStatus:
         assert result[0] == "not_testable:parent_vaf"
         result_default = _denovo_status(df, default_ruleset)
         assert result_default[0] == "de_novo"
+
+
+class TestPhasePair:
+    def test_paternal_maternal_is_trans(self):
+        assert _phase_pair("inherited_paternal", "inherited_maternal") == "trans"
+
+    def test_maternal_paternal_is_trans(self):
+        assert _phase_pair("inherited_maternal", "inherited_paternal") == "trans"
+
+    def test_paternal_paternal_is_cis(self):
+        assert _phase_pair("inherited_paternal", "inherited_paternal") == "cis"
+
+    def test_maternal_maternal_is_cis(self):
+        assert _phase_pair("inherited_maternal", "inherited_maternal") == "cis"
+
+    def test_de_novo_inherited_paternal_is_trans(self):
+        assert _phase_pair("de_novo", "inherited_paternal") == "trans"
+
+    def test_inherited_maternal_de_novo_is_trans(self):
+        assert _phase_pair("inherited_maternal", "de_novo") == "trans"
+
+    def test_de_novo_de_novo_is_unknown(self):
+        assert _phase_pair("de_novo", "de_novo") == "unknown"
+
+    def test_inherited_both_is_unknown(self):
+        assert _phase_pair("inherited_both", "inherited_paternal") == "unknown"
+        assert _phase_pair("inherited_maternal", "inherited_both") == "unknown"
+
+    def test_not_testable_is_unknown(self):
+        assert _phase_pair("not_testable:parent_qc", "inherited_paternal") == "unknown"
+
+    def test_none_is_unknown(self):
+        assert _phase_pair(None, "inherited_paternal") == "unknown"
+        assert _phase_pair("de_novo", None) == "unknown"
+        assert _phase_pair(None, None) == "unknown"
+
+    def test_de_novo_inherited_both_is_unknown(self):
+        assert _phase_pair("de_novo", "inherited_both") == "unknown"
+
+
+def _partner_df(rows):
+    """Build a DataFrame from a list of dicts for partner tests."""
+    if not rows:
+        return pl.DataFrame()
+    all_keys = set()
+    for r in rows:
+        all_keys.update(r.keys())
+    data = {k: [r.get(k) for r in rows] for k in all_keys}
+    return pl.DataFrame(data)
+
+
+class TestFindPartners:
+    def test_two_variants_same_gene_trans(self, default_ruleset):
+        df = _partner_df([
+            {"#CHROM": "chr1", "POS": "100", "REF": "A", "ALT": "T",
+             "VEP_SYMBOL": "BRCA1", "sample": "Child1",
+             "acmg_denovo": "inherited_paternal", "acmg_freq": "rare"},
+            {"#CHROM": "chr1", "POS": "200", "REF": "G", "ALT": "C",
+             "VEP_SYMBOL": "BRCA1", "sample": "Child1",
+             "acmg_denovo": "inherited_maternal", "acmg_freq": "rare"},
+        ])
+        result = _find_partners(df)
+        assert result[0] == "chr1:200:G:C(trans)"
+        assert result[1] == "chr1:100:A:T(trans)"
+
+    def test_two_variants_same_gene_cis(self, default_ruleset):
+        df = _partner_df([
+            {"#CHROM": "chr1", "POS": "100", "REF": "A", "ALT": "T",
+             "VEP_SYMBOL": "BRCA1", "sample": "Child1",
+             "acmg_denovo": "inherited_paternal", "acmg_freq": "rare"},
+            {"#CHROM": "chr1", "POS": "200", "REF": "G", "ALT": "C",
+             "VEP_SYMBOL": "BRCA1", "sample": "Child1",
+             "acmg_denovo": "inherited_paternal", "acmg_freq": "rare"},
+        ])
+        result = _find_partners(df)
+        assert result[0] == "chr1:200:G:C(cis)"
+        assert result[1] == "chr1:100:A:T(cis)"
+
+    def test_singleton_no_partners(self):
+        df = _partner_df([
+            {"#CHROM": "chr1", "POS": "100", "REF": "A", "ALT": "T",
+             "VEP_SYMBOL": "BRCA1", "sample": "Child1",
+             "acmg_denovo": "de_novo", "acmg_freq": "rare"},
+        ])
+        result = _find_partners(df)
+        assert result[0] is None
+
+    def test_different_genes_no_partners(self):
+        df = _partner_df([
+            {"#CHROM": "chr1", "POS": "100", "REF": "A", "ALT": "T",
+             "VEP_SYMBOL": "BRCA1", "sample": "Child1",
+             "acmg_denovo": "inherited_paternal", "acmg_freq": "rare"},
+            {"#CHROM": "chr1", "POS": "200", "REF": "G", "ALT": "C",
+             "VEP_SYMBOL": "TP53", "sample": "Child1",
+             "acmg_denovo": "inherited_maternal", "acmg_freq": "rare"},
+        ])
+        result = _find_partners(df)
+        assert result[0] is None
+        assert result[1] is None
+
+    def test_different_samples_no_partners(self):
+        df = _partner_df([
+            {"#CHROM": "chr1", "POS": "100", "REF": "A", "ALT": "T",
+             "VEP_SYMBOL": "BRCA1", "sample": "Child1",
+             "acmg_denovo": "inherited_paternal", "acmg_freq": "rare"},
+            {"#CHROM": "chr1", "POS": "200", "REF": "G", "ALT": "C",
+             "VEP_SYMBOL": "BRCA1", "sample": "Child2",
+             "acmg_denovo": "inherited_maternal", "acmg_freq": "rare"},
+        ])
+        result = _find_partners(df)
+        assert result[0] is None
+        assert result[1] is None
+
+    def test_ba1_excluded_as_partner(self):
+        df = _partner_df([
+            {"#CHROM": "chr1", "POS": "100", "REF": "A", "ALT": "T",
+             "VEP_SYMBOL": "BRCA1", "sample": "Child1",
+             "acmg_denovo": "inherited_paternal", "acmg_freq": "rare"},
+            {"#CHROM": "chr1", "POS": "200", "REF": "G", "ALT": "C",
+             "VEP_SYMBOL": "BRCA1", "sample": "Child1",
+             "acmg_denovo": "inherited_maternal", "acmg_freq": "BA1"},
+        ])
+        result = _find_partners(df)
+        assert result[0] is None
+        assert result[1] == "chr1:100:A:T(trans)"
+
+    def test_no_vep_symbol_no_partners(self):
+        df = _partner_df([
+            {"#CHROM": "chr1", "POS": "100", "REF": "A", "ALT": "T",
+             "VEP_SYMBOL": None, "sample": "Child1",
+             "acmg_denovo": "inherited_paternal", "acmg_freq": "rare"},
+            {"#CHROM": "chr1", "POS": "200", "REF": "G", "ALT": "C",
+             "VEP_SYMBOL": None, "sample": "Child1",
+             "acmg_denovo": "inherited_maternal", "acmg_freq": "rare"},
+        ])
+        result = _find_partners(df)
+        assert result[0] is None
+        assert result[1] is None
+
+    def test_dot_symbol_no_partners(self):
+        df = _partner_df([
+            {"#CHROM": "chr1", "POS": "100", "REF": "A", "ALT": "T",
+             "VEP_SYMBOL": ".", "sample": "Child1",
+             "acmg_denovo": "inherited_paternal", "acmg_freq": "rare"},
+            {"#CHROM": "chr1", "POS": "200", "REF": "G", "ALT": "C",
+             "VEP_SYMBOL": ".", "sample": "Child1",
+             "acmg_denovo": "inherited_maternal", "acmg_freq": "rare"},
+        ])
+        result = _find_partners(df)
+        assert result[0] is None
+        assert result[1] is None
+
+    def test_three_variants_multiple_partners(self):
+        df = _partner_df([
+            {"#CHROM": "chr1", "POS": "100", "REF": "A", "ALT": "T",
+             "VEP_SYMBOL": "BRCA1", "sample": "Child1",
+             "acmg_denovo": "inherited_paternal", "acmg_freq": "rare"},
+            {"#CHROM": "chr1", "POS": "200", "REF": "G", "ALT": "C",
+             "VEP_SYMBOL": "BRCA1", "sample": "Child1",
+             "acmg_denovo": "inherited_maternal", "acmg_freq": "rare"},
+            {"#CHROM": "chr1", "POS": "300", "REF": "C", "ALT": "G",
+             "VEP_SYMBOL": "BRCA1", "sample": "Child1",
+             "acmg_denovo": "de_novo", "acmg_freq": "absent"},
+        ])
+        result = _find_partners(df)
+        parts_0 = result[0].split(";")
+        assert len(parts_0) == 2
+        assert "chr1:200:G:C(trans)" in parts_0
+        assert "chr1:300:C:G(trans)" in parts_0
+
+    def test_no_denovo_column_gives_unknown_phase(self):
+        df = _partner_df([
+            {"#CHROM": "chr1", "POS": "100", "REF": "A", "ALT": "T",
+             "VEP_SYMBOL": "BRCA1", "sample": "Child1", "acmg_freq": "rare"},
+            {"#CHROM": "chr1", "POS": "200", "REF": "G", "ALT": "C",
+             "VEP_SYMBOL": "BRCA1", "sample": "Child1", "acmg_freq": "rare"},
+        ])
+        result = _find_partners(df)
+        assert result[0] == "chr1:200:G:C(unknown)"
+
+    def test_missing_required_columns(self):
+        df = pl.DataFrame({"other_col": [1, 2]})
+        result = _find_partners(df)
+        assert result[0] is None
+        assert result[1] is None
+
+    def test_no_freq_column_still_works(self):
+        df = _partner_df([
+            {"#CHROM": "chr1", "POS": "100", "REF": "A", "ALT": "T",
+             "VEP_SYMBOL": "BRCA1", "sample": "Child1",
+             "acmg_denovo": "inherited_paternal"},
+            {"#CHROM": "chr1", "POS": "200", "REF": "G", "ALT": "C",
+             "VEP_SYMBOL": "BRCA1", "sample": "Child1",
+             "acmg_denovo": "inherited_maternal"},
+        ])
+        result = _find_partners(df)
+        assert result[0] == "chr1:200:G:C(trans)"
+
+
+class TestAnnotateACMGPartners:
+    def test_partners_column_present(self, default_ruleset):
+        df = pl.DataFrame({
+            "VEP_Consequence": ["missense_variant"],
+        })
+        result = annotate_acmg(df, default_ruleset)
+        assert "acmg_partners" in result.columns
+
+    def test_partners_in_full_annotation(self, default_ruleset):
+        df = _partner_df([
+            {"#CHROM": "chr1", "POS": "100", "REF": "A", "ALT": "T",
+             "VEP_SYMBOL": "BRCA1", "sample": "Child1",
+             "fafmax_faf95_max_joint": 0.001, "AC_joint": 5, "AN_joint": 50000,
+             "REVEL": 0.80, "SpliceAI_maxDS": 0.05,
+             "VEP_Consequence": "missense_variant", "VEP_HGVSc": None,
+             "LCR": None,
+             "father": "Father1", "mother": "Mother1",
+             "father_gt": "0/1", "father_dp": "30", "father_gq": "99",
+             "father_ad": "30", "father_vaf": 0.5,
+             "mother_gt": "0/0", "mother_dp": "30", "mother_gq": "99",
+             "mother_ad": "30", "mother_vaf": 0.0,
+             "sex": "1"},
+            {"#CHROM": "chr1", "POS": "200", "REF": "G", "ALT": "C",
+             "VEP_SYMBOL": "BRCA1", "sample": "Child1",
+             "fafmax_faf95_max_joint": 0.001, "AC_joint": 5, "AN_joint": 50000,
+             "REVEL": 0.65, "SpliceAI_maxDS": 0.05,
+             "VEP_Consequence": "missense_variant", "VEP_HGVSc": None,
+             "LCR": None,
+             "father": "Father1", "mother": "Mother1",
+             "father_gt": "0/0", "father_dp": "30", "father_gq": "99",
+             "father_ad": "30", "father_vaf": 0.0,
+             "mother_gt": "0/1", "mother_dp": "30", "mother_gq": "99",
+             "mother_ad": "30", "mother_vaf": 0.5,
+             "sex": "1"},
+        ])
+        result = annotate_acmg(df, default_ruleset)
+        assert result["acmg_partners"][0] == "chr1:200:G:C(trans)"
+        assert result["acmg_partners"][1] == "chr1:100:A:T(trans)"
+
+    def test_vep_symbol_in_missing_when_absent(self, default_ruleset):
+        df = pl.DataFrame({
+            "VEP_Consequence": ["missense_variant"],
+        })
+        result = annotate_acmg(df, default_ruleset)
+        assert "VEP_SYMBOL" in result["acmg_missing"][0]

@@ -2,7 +2,8 @@
 
 Computes evidence criteria that need only the variant and the family:
 frequency, PP3/BP4 (missense predictor), splice PP3/BP4, BP7,
-PM4/BP3 candidates, de novo status. Each criterion becomes an acmg_* column.
+PM4/BP3 candidates, de novo status, partner variants (compound het
+candidates with phase). Each criterion becomes an acmg_* column.
 """
 
 import importlib.resources
@@ -87,6 +88,9 @@ def _missing_columns(df: pl.DataFrame, ruleset: dict) -> list[str]:
 
     if "LCR" not in cols:
         missing.append("LCR")
+
+    if "VEP_SYMBOL" not in cols:
+        missing.append("VEP_SYMBOL")
 
     return missing
 
@@ -563,6 +567,89 @@ def _denovo_status(
     return pl.Series("acmg_denovo", result, dtype=pl.Utf8)
 
 
+def _phase_pair(denovo_a: Optional[str], denovo_b: Optional[str]) -> str:
+    """Determine phase between two variants from their inheritance status.
+
+    Returns 'trans', 'cis', or 'unknown'.
+    """
+    if denovo_a is None or denovo_b is None:
+        return "unknown"
+    if denovo_a.startswith("not_testable") or denovo_b.startswith("not_testable"):
+        return "unknown"
+    if denovo_a == "inherited_both" or denovo_b == "inherited_both":
+        return "unknown"
+
+    if "inherited_paternal" in (denovo_a, denovo_b) and "inherited_maternal" in (denovo_a, denovo_b):
+        return "trans"
+    if denovo_a == denovo_b == "inherited_paternal":
+        return "cis"
+    if denovo_a == denovo_b == "inherited_maternal":
+        return "cis"
+
+    if denovo_a == "de_novo" or denovo_b == "de_novo":
+        other = denovo_b if denovo_a == "de_novo" else denovo_a
+        if other in ("inherited_paternal", "inherited_maternal"):
+            return "trans"
+
+    return "unknown"
+
+
+def _find_partners(df: pl.DataFrame) -> pl.Series:
+    """Find partner variants in the same gene for compound heterozygosity.
+
+    Groups by (VEP_SYMBOL, sample) and determines phase from inheritance.
+    BA1 variants are excluded as partners.
+    """
+    n = df.height
+    cols = set(df.columns)
+
+    required = {"VEP_SYMBOL", "sample", "#CHROM", "POS", "REF", "ALT"}
+    if not required.issubset(cols):
+        return pl.Series("acmg_partners", [None] * n, dtype=pl.Utf8)
+
+    gene = df["VEP_SYMBOL"].cast(pl.Utf8)
+    sample = df["sample"].cast(pl.Utf8)
+    chrom = df["#CHROM"].cast(pl.Utf8)
+    pos = df["POS"].cast(pl.Utf8)
+    ref = df["REF"].cast(pl.Utf8)
+    alt = df["ALT"].cast(pl.Utf8)
+
+    has_denovo = "acmg_denovo" in cols
+    denovo = df["acmg_denovo"].cast(pl.Utf8) if has_denovo else None
+
+    has_freq = "acmg_freq" in cols
+    freq = df["acmg_freq"].cast(pl.Utf8) if has_freq else None
+
+    groups: dict[tuple, list[int]] = {}
+    for i in range(n):
+        g = gene[i]
+        s = sample[i]
+        if g is None or g in ("", "."):
+            continue
+        groups.setdefault((g, s), []).append(i)
+
+    result: list[Optional[str]] = [None] * n
+
+    for indices in groups.values():
+        if len(indices) < 2:
+            continue
+        for i in indices:
+            partners = []
+            for j in indices:
+                if j == i:
+                    continue
+                if has_freq and freq[j] == "BA1":
+                    continue
+                phase = _phase_pair(
+                    denovo[i] if denovo is not None else None,
+                    denovo[j] if denovo is not None else None,
+                )
+                partners.append(f"{chrom[j]}:{pos[j]}:{ref[j]}:{alt[j]}({phase})")
+            result[i] = ";".join(partners) if partners else None
+
+    return pl.Series("acmg_partners", result, dtype=pl.Utf8)
+
+
 def _resolve_criteria(row: dict, points_map: dict) -> tuple[list[str], int]:
     """Combine individual acmg_* columns into criteria list and point sum.
 
@@ -684,6 +771,9 @@ def annotate_acmg(
         pm4_bp3_series,
         denovo_series,
     ])
+
+    partners_series = _find_partners(df)
+    df = df.with_columns([partners_series])
 
     # Resolve criteria and points per row
     criteria_list = []
