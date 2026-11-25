@@ -349,6 +349,22 @@ def process_dnm_by_chromosome(
     dnm_cfg.update(quality_cfg)
     dnm_cfg.update(dnm_section)
 
+    # Apply expression filter before melting if present (same as non-DNM path)
+    expression = filter_config.get("expression")
+    expr_filter = None
+    if expression:
+        schema_df = pl.scan_parquet(input_file).head(1).collect()
+        try:
+            expr_filter = parse_impact_filter_expression(expression, schema_df)
+            if verbose:
+                click.echo(
+                    f"DNM: applying expression filter before melting: {expression}",
+                    err=True,
+                )
+        except Exception as e:
+            if verbose:
+                click.echo(f"Warning: Could not apply early filter: {e}", err=True)
+
     for chrom in chromosomes:
         if verbose:
             click.echo(f"Processing chromosome {chrom}...", err=True)
@@ -357,6 +373,10 @@ def process_dnm_by_chromosome(
         lazy_df = pl.scan_parquet(input_file).filter(
             pl.col("#CHROM") == chrom
         )
+
+        # Apply expression filter BEFORE melting
+        if expr_filter is not None:
+            lazy_df = lazy_df.filter(expr_filter)
 
         # Apply frequency filters BEFORE melting (Optimization 2)
         lazy_df = apply_dnm_prefilters(lazy_df, filter_config, verbose=False)

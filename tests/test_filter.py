@@ -365,6 +365,58 @@ class TestDNMOptimization:
         assert "father" in result.columns
         assert "mother" in result.columns
 
+    def test_dnm_per_chromosome_applies_expression(self, tmp_test_dir):
+        """Expression filter must be applied even in the DNM per-chromosome path."""
+        from pywombat.cli import process_dnm_by_chromosome
+
+        # Two variants: one HIGH impact, one LOW impact
+        data = pl.DataFrame({
+            "#CHROM": ["chr1", "chr1"],
+            "POS": [100, 200],
+            "REF": ["A", "C"],
+            "ALT": ["T", "G"],
+            "FILTER": [".", "."],
+            "VEP_IMPACT": ["HIGH", "LOW"],
+            "Child:GT:Child:DP:Child:GQ:Child:AD": ["0/1:30:50:15,15", "0/1:30:50:15,15"],
+            "Father:GT:Father:DP:Father:GQ:Father:AD": ["0/0:25:50:25,0", "0/0:25:50:25,0"],
+            "Mother:GT:Mother:DP:Mother:GQ:Mother:AD": ["0/0:22:50:22,0", "0/0:22:50:22,0"],
+        })
+        parquet_path = tmp_test_dir / "dnm_expr.parquet"
+        data.write_parquet(parquet_path)
+
+        pedigree = pl.DataFrame({
+            "sample_id": ["Child", "Father", "Mother"],
+            "father_id": ["Father", None, None],
+            "mother_id": ["Mother", None, None],
+            "sex": ["1", "1", "2"],
+        })
+
+        config_no_expr = {
+            "quality": {"sample_dp_min": 10, "sample_gq_min": 18},
+            "dnm": {
+                "enabled": True,
+                "parent_dp_min": 10,
+                "parent_gq_min": 18,
+                "parent_vaf_max": 0.05,
+            },
+        }
+
+        config_with_expr = {
+            **config_no_expr,
+            "expression": "VEP_IMPACT = HIGH",
+        }
+
+        result_all = process_dnm_by_chromosome(
+            parquet_path, pedigree, config_no_expr, "tsv", verbose=False
+        )
+        result_filtered = process_dnm_by_chromosome(
+            parquet_path, pedigree, config_with_expr, "tsv", verbose=False
+        )
+
+        assert result_all.shape[0] == 2, f"Expected 2 without expression, got {result_all.shape[0]}"
+        assert result_filtered.shape[0] == 1, f"Expected 1 with expression, got {result_filtered.shape[0]}"
+        assert result_filtered["VEP_IMPACT"][0] == "HIGH"
+
 
 class TestHomaltFilter:
     """Test homalt_only quality filter."""

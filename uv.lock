@@ -406,8 +406,8 @@ mnv = [
 requires-dist = [
     { name = "click", specifier = ">=8.1.0" },
     { name = "cyvcf2", marker = "extra == 'mnv'", specifier = ">=0.31.0" },
-    { name = "polars", specifier = ">=1.30.0" },
-    { name = "pyarrow", specifier = ">=14.0.0" },
+    { name = "polars", specifier = ">=1.30.0,<3" },
+    { name = "pyarrow", specifier = ">=14.0.0,<24" },
     { name = "pysam", marker = "extra == 'mnv'", specifier = ">=0.22.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },

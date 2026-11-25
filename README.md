@@ -681,6 +681,29 @@ Shows:
 
 ---
 
+## Stable Output Columns
+
+The following columns are considered stable and can be relied upon by downstream tools (e.g., [genetics-viz](https://github.com/bourgeron-lab/genetics-viz)).
+
+| Column | Present when | Description |
+|--------|-------------|-------------|
+| `#CHROM`, `POS`, `REF`, `ALT` | Always | Variant coordinates |
+| `FILTER` | Always | VCF FILTER field |
+| `sample` | Always | Sample identifier |
+| `sample_gt` | Always | Sample genotype (e.g., 0/1, 1/1) |
+| `sample_dp`, `sample_gq`, `sample_ad`, `sample_vaf` | Always | Sample depth, quality, allele depth, variant allele frequency |
+| `father_gt`, `father_dp`, `father_gq`, `father_ad`, `father_vaf` | Pedigree provided | Father genotype fields |
+| `mother_gt`, `mother_dp`, `mother_gq`, `mother_ad`, `mother_vaf` | Pedigree provided | Mother genotype fields |
+| `father`, `mother` | Pedigree provided | Parent sample identifiers |
+| `sex` | Pedigree with sex column | Sample sex from pedigree |
+| `mnv_proba` | MNV detection enabled | Phasing probability (0.0–1.0) |
+| `mnv_inframe` | MNV detection enabled | Whether combined indels maintain reading frame |
+| `mnv_variant` | MNV detection enabled | Reconstructed MNV notation for SNVs |
+
+All VEP annotation columns (prefixed `VEP_`) and INFO fields extracted from the input are passed through but are not part of this contract — their presence depends on the input file.
+
+---
+
 ## Output Formats
 
 ### TSV (Default)
@@ -962,7 +985,7 @@ cd pywombat
 # Install dependencies
 uv sync
 
-# Run tests (if available)
+# Run tests
 uv run pytest
 ```
 

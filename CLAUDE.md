@@ -108,7 +108,7 @@ pywombat/
 
 **Purpose**: Converts TSV/TSV.gz to optimized Parquet format with pre-expanded INFO fields.
 
-**Location**: cli.py, line 27
+**Location**: cli.py, line 78
 
 **Process**:
 1. First pass: Discovers all INFO fields (key-value pairs and boolean flags)
@@ -119,8 +119,8 @@ pywombat/
 
 **Key functions**:
 - `prepare_cmd()` - Command entry point
-- `prepare_parquet()` (line 86) - Main preprocessing function
-- `_process_chunk()` (line 218) - Processes chunks of TSV data
+- `prepare_parquet()` (line 121) - Main preprocessing function
+- `_process_chunk()` (line 253) - Processes chunks of TSV data
 
 **Usage**:
 ```bash
@@ -131,7 +131,7 @@ uv run wombat prepare input.tsv -o prepared.parquet --chunk-size 50000 -v
 
 **Purpose**: Transforms and filters variant data (works with TSV or Parquet input).
 
-**Location**: cli.py, line 372
+**Location**: cli.py, line 461
 
 **Command signature**:
 ```python
@@ -233,7 +233,7 @@ uv run wombat merge-annotations --tsv output.tsv --annotations output.annotated.
 
 ### 1. Quality Filters
 
-**Function**: `apply_quality_filters()` (cli.py, line 772)
+**Function**: `apply_quality_filters()` (cli.py, line 885)
 
 **Applies depth, quality, and VAF thresholds based on genotype type.**
 
@@ -257,7 +257,7 @@ is_hom_ref = pl.col("sample_gt") == "0/0"
 
 ### 2. Expression-Based Filters
 
-**Function**: `parse_impact_filter_expression()` (cli.py, line 1327)
+**Function**: `parse_impact_filter_expression()` (cli.py, line 1474)
 
 **Parses YAML filter expressions into Polars expressions.**
 
@@ -287,7 +287,7 @@ expression: >
 
 ### 3. De Novo Mutation (DNM) Filter
 
-**Function**: `apply_de_novo_filter()` (cli.py, line 1034)
+**Function**: `apply_de_novo_filter()` (cli.py, line 1147)
 
 **Detects de novo mutations in trios/families with sex-chromosome awareness.**
 
@@ -378,7 +378,7 @@ df = pl.scan_parquet(input_file).collect()  # Loads everything
 df = df.filter(condition)
 ```
 
-**Early filtering optimization** (cli.py, lines 509-564):
+**Early filtering optimization** (cli.py, lines 592-620):
 ```python
 # For Parquet input, apply expression filters BEFORE melting
 if filter_config_data and "expression" in filter_config_data:
@@ -429,7 +429,7 @@ FID  sample_id  FatherBarcode  MotherBarcode  Sex  Pheno
 FAM1 Child1     Father1        Mother1        1    2
 ```
 
-**Function**: `add_parent_genotypes()` (cli.py, line 1799)
+**Function**: `add_parent_genotypes()` (cli.py, line 2051)
 
 **Process**:
 1. Join pedigree to variant dataframe on `sample_id`
@@ -480,7 +480,7 @@ mnv:
     end: 33480577      # GRCh38 xMHC end
 ```
 
-**Configuration loading**: `load_filter_config()` (cli.py, line 720)
+**Configuration loading**: `load_filter_config()` (cli.py, line 878)
 
 Returns dict with keys: `quality`, `expression`, `dnm`, `mnv`
 
@@ -659,7 +659,7 @@ quality:
   new_filter_threshold: 50
 ```
 
-2. **Add filter logic** in `apply_quality_filters()` (cli.py, ~line 772):
+2. **Add filter logic** in `apply_quality_filters()` (cli.py, ~line 885):
 ```python
 if "new_filter_threshold" in quality_config:
     threshold = quality_config["new_filter_threshold"]
@@ -677,7 +677,7 @@ def test_new_filter():
 
 ### Adding a New Expression Operator
 
-1. **Add parsing** in `parse_impact_filter_expression()` (cli.py, ~line 1327):
+1. **Add parsing** in `parse_impact_filter_expression()` (cli.py, ~line 1474):
 ```python
 # Add to parse_condition() nested function
 operator_match = re.match(r"^([\w.]+)\s+new_operator\s+(.+)$", condition)
@@ -951,7 +951,7 @@ uv run pytest --cov=pywombat --cov-report=html
 
 | File | Purpose | Key Functions/Content |
 |------|---------|----------------------|
-| `src/pywombat/cli.py` | Main CLI | `filter_cmd`, `prepare_cmd`, `vep_cmd`, `merge_annotations_cmd`, `_normalize_annotate_mode`, `apply_quality_filters`, `apply_de_novo_filter`, `parse_impact_filter_expression` |
+| `src/pywombat/cli.py` | Main CLI | `filter_cmd` (461), `prepare_cmd` (78), `vep_cmd` (3026), `merge_annotations_cmd` (3099), `apply_quality_filters` (885), `apply_de_novo_filter` (1147), `parse_impact_filter_expression` (1474), `process_dnm_by_chromosome` (302) |
 | `src/pywombat/mnv.py` | MNV detection | `calculate_phasing_probability`, `calculate_indel_inframe`, `detect_mnv_candidates` |
 | `src/pywombat/vep.py` | VEP annotation + merge | `parse_variant`, `query_vep`, `extract_annotations`, `annotate_mnv_variants`, `create_mnv_placeholders_and_vcf`, `parse_vep_annotation_file`, `merge_vep_annotations` |
 | `pyproject.toml` | Project config | Version, dependencies, build config |
