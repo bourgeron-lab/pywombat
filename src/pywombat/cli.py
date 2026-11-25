@@ -8,6 +8,7 @@ from typing import Optional
 import click
 import polars as pl
 
+from pywombat.acmg import annotate_acmg, load_ruleset
 from pywombat.denovo import process_dnm_by_chromosome
 from pywombat.expression import parse_impact_filter_expression
 from pywombat.filters import apply_filters_lazy, load_filter_config
@@ -218,6 +219,12 @@ def prepare_cmd(
     default=None,
     help="Path to indexed FASTA reference for MNV reconstruction.",
 )
+@click.option(
+    "--acmg-ruleset",
+    type=str,
+    default=None,
+    help="ACMG evidence ruleset: built-in name (e.g. acmg-svi-2024.1) or path to YAML.",
+)
 def filter_cmd(
     input_file: Path,
     output: Optional[str],
@@ -228,6 +235,7 @@ def filter_cmd(
     debug: Optional[str],
     bcf: Optional[Path],
     fasta: Optional[Path],
+    acmg_ruleset: Optional[str],
 ):
     """
     Process and filter variant data from TSV or Parquet files.
@@ -314,6 +322,12 @@ def filter_cmd(
                 formatted_df = process_dnm_by_chromosome(
                     input_file, pedigree_df, filter_config_data, output_format, verbose
                 )
+
+                if acmg_ruleset:
+                    ruleset = load_ruleset(acmg_ruleset)
+                    if verbose:
+                        click.echo(f"Annotating ACMG evidence ({ruleset.get('name', acmg_ruleset)})...", err=True)
+                    formatted_df = annotate_acmg(formatted_df, ruleset)
 
                 write_output(formatted_df, output, output_format, verbose)
                 return
@@ -465,6 +479,14 @@ def filter_cmd(
                         err=True,
                     )
 
+            lazy_df = df.lazy()
+
+        if acmg_ruleset:
+            ruleset = load_ruleset(acmg_ruleset)
+            if verbose:
+                click.echo(f"Annotating ACMG evidence ({ruleset.get('name', acmg_ruleset)})...", err=True)
+            df = lazy_df.collect() if isinstance(lazy_df, pl.LazyFrame) else lazy_df
+            df = annotate_acmg(df, ruleset)
             lazy_df = df.lazy()
 
         write_output(lazy_df, output, output_format, verbose)
