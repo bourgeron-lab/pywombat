@@ -12,6 +12,7 @@ from pywombat.acmg import (
     _splice_evidence,
     _bp7,
     _pm4_bp3,
+    _pvs1,
     _denovo_status,
     _phase_pair,
     _find_partners,
@@ -376,6 +377,258 @@ class TestPM4BP3:
         })
         result = _pm4_bp3(df)
         assert result[0] == "PM4_candidate"
+
+
+class TestPVS1:
+    def test_frameshift_hc_no_flags(self):
+        df = pl.DataFrame({
+            "VEP_Consequence": ["frameshift_variant"],
+            "VEP_LoF": ["HC"],
+            "VEP_LoF_filter": [None],
+            "VEP_LoF_flags": [None],
+            "VEP_EXON": ["3/10"],
+        }).cast({"VEP_LoF_filter": pl.Utf8, "VEP_LoF_flags": pl.Utf8})
+        result = _pvs1(df)
+        assert result[0] == "PVS1_candidate:exon=3/10"
+
+    def test_stop_gained_hc(self):
+        df = pl.DataFrame({
+            "VEP_Consequence": ["stop_gained"],
+            "VEP_LoF": ["HC"],
+            "VEP_LoF_filter": [None],
+            "VEP_LoF_flags": [None],
+            "VEP_EXON": ["5/12"],
+        }).cast({"VEP_LoF_filter": pl.Utf8, "VEP_LoF_flags": pl.Utf8})
+        result = _pvs1(df)
+        assert result[0] == "PVS1_candidate:exon=5/12"
+
+    def test_splice_donor_hc(self):
+        df = pl.DataFrame({
+            "VEP_Consequence": ["splice_donor_variant"],
+            "VEP_LoF": ["HC"],
+            "VEP_LoF_filter": [None],
+            "VEP_LoF_flags": [None],
+        }).cast({"VEP_LoF_filter": pl.Utf8, "VEP_LoF_flags": pl.Utf8})
+        result = _pvs1(df)
+        assert result[0] == "PVS1_candidate"
+
+    def test_splice_acceptor_hc(self):
+        df = pl.DataFrame({
+            "VEP_Consequence": ["splice_acceptor_variant"],
+            "VEP_LoF": ["HC"],
+            "VEP_LoF_filter": [None],
+            "VEP_LoF_flags": [None],
+            "VEP_EXON": ["2/8"],
+        }).cast({"VEP_LoF_filter": pl.Utf8, "VEP_LoF_flags": pl.Utf8})
+        result = _pvs1(df)
+        assert result[0] == "PVS1_candidate:exon=2/8"
+
+    def test_hc_with_flags_is_review(self):
+        df = pl.DataFrame({
+            "VEP_Consequence": ["frameshift_variant"],
+            "VEP_LoF": ["HC"],
+            "VEP_LoF_filter": [None],
+            "VEP_LoF_flags": ["SINGLE_EXON"],
+            "VEP_EXON": ["1/1"],
+        }).cast({"VEP_LoF_filter": pl.Utf8})
+        result = _pvs1(df)
+        assert result[0] == "review:lof_flags=SINGLE_EXON:exon=1/1"
+
+    def test_lc_with_filter(self):
+        df = pl.DataFrame({
+            "VEP_Consequence": ["stop_gained"],
+            "VEP_LoF": ["LC"],
+            "VEP_LoF_filter": ["END_TRUNC"],
+            "VEP_LoF_flags": [None],
+            "VEP_EXON": ["10/10"],
+        }).cast({"VEP_LoF_flags": pl.Utf8})
+        result = _pvs1(df)
+        assert result[0] == "review:lof_lc(END_TRUNC):exon=10/10"
+
+    def test_lc_no_filter(self):
+        df = pl.DataFrame({
+            "VEP_Consequence": ["frameshift_variant"],
+            "VEP_LoF": ["LC"],
+            "VEP_LoF_filter": [None],
+            "VEP_LoF_flags": [None],
+        }).cast({"VEP_LoF_filter": pl.Utf8, "VEP_LoF_flags": pl.Utf8})
+        result = _pvs1(df)
+        assert result[0] == "review:lof_lc"
+
+    def test_os_loftee(self):
+        df = pl.DataFrame({
+            "VEP_Consequence": ["splice_donor_variant"],
+            "VEP_LoF": ["OS"],
+            "VEP_LoF_filter": [None],
+            "VEP_LoF_flags": [None],
+        }).cast({"VEP_LoF_filter": pl.Utf8, "VEP_LoF_flags": pl.Utf8})
+        result = _pvs1(df)
+        assert result[0] == "review:lof_os"
+
+    def test_start_lost_always_review(self):
+        df = pl.DataFrame({
+            "VEP_Consequence": ["start_lost"],
+            "VEP_LoF": ["HC"],
+            "VEP_LoF_filter": [None],
+            "VEP_LoF_flags": [None],
+            "VEP_EXON": ["1/10"],
+        }).cast({"VEP_LoF_filter": pl.Utf8, "VEP_LoF_flags": pl.Utf8})
+        result = _pvs1(df)
+        assert result[0] == "review:start_lost:exon=1/10"
+
+    def test_no_loftee_data(self):
+        df = pl.DataFrame({
+            "VEP_Consequence": ["frameshift_variant"],
+            "VEP_EXON": ["4/10"],
+        })
+        result = _pvs1(df)
+        assert result[0] == "review:no_loftee:exon=4/10"
+
+    def test_loftee_dot_is_no_loftee(self):
+        df = pl.DataFrame({
+            "VEP_Consequence": ["stop_gained"],
+            "VEP_LoF": ["."],
+            "VEP_LoF_filter": [None],
+            "VEP_LoF_flags": [None],
+        }).cast({"VEP_LoF_filter": pl.Utf8, "VEP_LoF_flags": pl.Utf8})
+        result = _pvs1(df)
+        assert result[0] == "review:no_loftee"
+
+    def test_missense_not_eligible(self):
+        df = pl.DataFrame({
+            "VEP_Consequence": ["missense_variant"],
+            "VEP_LoF": ["HC"],
+            "VEP_LoF_filter": [None],
+            "VEP_LoF_flags": [None],
+        }).cast({"VEP_LoF_filter": pl.Utf8, "VEP_LoF_flags": pl.Utf8})
+        result = _pvs1(df)
+        assert result[0] is None
+
+    def test_synonymous_not_eligible(self):
+        df = pl.DataFrame({
+            "VEP_Consequence": ["synonymous_variant"],
+            "VEP_LoF": ["HC"],
+            "VEP_LoF_filter": [None],
+            "VEP_LoF_flags": [None],
+        }).cast({"VEP_LoF_filter": pl.Utf8, "VEP_LoF_flags": pl.Utf8})
+        result = _pvs1(df)
+        assert result[0] is None
+
+    def test_multi_consequence_with_null(self):
+        df = pl.DataFrame({
+            "VEP_Consequence": ["frameshift_variant&splice_region_variant"],
+            "VEP_LoF": ["HC"],
+            "VEP_LoF_filter": [None],
+            "VEP_LoF_flags": [None],
+            "VEP_EXON": ["3/10"],
+        }).cast({"VEP_LoF_filter": pl.Utf8, "VEP_LoF_flags": pl.Utf8})
+        result = _pvs1(df)
+        assert result[0] == "PVS1_candidate:exon=3/10"
+
+    def test_no_exon_no_suffix(self):
+        df = pl.DataFrame({
+            "VEP_Consequence": ["frameshift_variant"],
+            "VEP_LoF": ["HC"],
+            "VEP_LoF_filter": [None],
+            "VEP_LoF_flags": [None],
+        }).cast({"VEP_LoF_filter": pl.Utf8, "VEP_LoF_flags": pl.Utf8})
+        result = _pvs1(df)
+        assert result[0] == "PVS1_candidate"
+
+    def test_dot_exon_no_suffix(self):
+        df = pl.DataFrame({
+            "VEP_Consequence": ["stop_gained"],
+            "VEP_LoF": ["HC"],
+            "VEP_LoF_filter": [None],
+            "VEP_LoF_flags": ["."],
+            "VEP_EXON": ["."],
+        }).cast({"VEP_LoF_filter": pl.Utf8})
+        result = _pvs1(df)
+        assert result[0] == "PVS1_candidate"
+
+    def test_null_consequence(self):
+        df = pl.DataFrame({
+            "VEP_Consequence": [None],
+            "VEP_LoF": ["HC"],
+        }).cast({"VEP_Consequence": pl.Utf8})
+        result = _pvs1(df)
+        assert result[0] is None
+
+    def test_no_consequence_column(self):
+        df = pl.DataFrame({"other_col": [1]})
+        result = _pvs1(df)
+        assert result[0] is None
+
+
+class TestPVS1InCriteria:
+    def test_pvs1_candidate_in_criteria(self, default_ruleset):
+        df = pl.DataFrame({
+            "fafmax_faf95_max_joint": [0.0],
+            "AC_joint": [0],
+            "AN_joint": [30000],
+            "REVEL": [None],
+            "SpliceAI_maxDS": [None],
+            "VEP_Consequence": ["frameshift_variant"],
+            "VEP_HGVSc": [None],
+            "LCR": [None],
+            "VEP_LoF": ["HC"],
+            "VEP_LoF_filter": [None],
+            "VEP_LoF_flags": [None],
+            "VEP_EXON": ["3/10"],
+        }).cast({"REVEL": pl.Float64, "SpliceAI_maxDS": pl.Float64,
+                  "VEP_HGVSc": pl.Utf8, "LCR": pl.Utf8,
+                  "VEP_LoF_filter": pl.Utf8, "VEP_LoF_flags": pl.Utf8})
+        result = annotate_acmg(df, default_ruleset)
+        criteria = result["acmg_criteria"][0]
+        assert "PVS1_candidate" in criteria
+
+    def test_pvs1_candidate_not_scored(self, default_ruleset):
+        df = pl.DataFrame({
+            "fafmax_faf95_max_joint": [0.001],
+            "AC_joint": [5],
+            "AN_joint": [50000],
+            "REVEL": [None],
+            "SpliceAI_maxDS": [None],
+            "VEP_Consequence": ["frameshift_variant"],
+            "VEP_HGVSc": [None],
+            "LCR": [None],
+            "VEP_LoF": ["HC"],
+            "VEP_LoF_filter": [None],
+            "VEP_LoF_flags": [None],
+        }).cast({"REVEL": pl.Float64, "SpliceAI_maxDS": pl.Float64,
+                  "VEP_HGVSc": pl.Utf8, "LCR": pl.Utf8,
+                  "VEP_LoF_filter": pl.Utf8, "VEP_LoF_flags": pl.Utf8})
+        result = annotate_acmg(df, default_ruleset)
+        assert result["acmg_points_auto"][0] is None
+
+    def test_review_not_in_criteria(self, default_ruleset):
+        df = pl.DataFrame({
+            "fafmax_faf95_max_joint": [0.001],
+            "AC_joint": [5],
+            "AN_joint": [50000],
+            "REVEL": [None],
+            "SpliceAI_maxDS": [None],
+            "VEP_Consequence": ["start_lost"],
+            "VEP_HGVSc": [None],
+            "LCR": [None],
+            "VEP_LoF": ["HC"],
+            "VEP_LoF_filter": [None],
+            "VEP_LoF_flags": [None],
+        }).cast({"REVEL": pl.Float64, "SpliceAI_maxDS": pl.Float64,
+                  "VEP_HGVSc": pl.Utf8, "LCR": pl.Utf8,
+                  "VEP_LoF_filter": pl.Utf8, "VEP_LoF_flags": pl.Utf8})
+        result = annotate_acmg(df, default_ruleset)
+        criteria = result["acmg_criteria"][0]
+        assert criteria is None or "PVS1" not in criteria
+
+    def test_lof_missing_in_acmg_missing(self, default_ruleset):
+        df = pl.DataFrame({
+            "VEP_Consequence": ["missense_variant"],
+        })
+        result = annotate_acmg(df, default_ruleset)
+        missing = result["acmg_missing"][0]
+        assert "VEP_LoF" in missing
+        assert "VEP_EXON" in missing
 
 
 class TestParseIntronOffset:

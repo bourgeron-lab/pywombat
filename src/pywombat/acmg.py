@@ -2,8 +2,8 @@
 
 Computes evidence criteria that need only the variant and the family:
 frequency, PP3/BP4 (missense predictor), splice PP3/BP4, BP7,
-PM4/BP3 candidates, de novo status, partner variants (compound het
-candidates with phase). Each criterion becomes an acmg_* column.
+PM4/BP3 candidates, PVS1 candidates, de novo status, partner variants
+(compound het candidates with phase). Each criterion becomes an acmg_* column.
 """
 
 import importlib.resources
@@ -28,6 +28,14 @@ _SYNONYMOUS_CONSEQUENCES = {"synonymous_variant"}
 _INFRAME_CONSEQUENCES = {"inframe_insertion", "inframe_deletion", "stop_lost"}
 
 _INTRONIC_CONSEQUENCES = {"intron_variant"}
+
+_NULL_CONSEQUENCES = {
+    "frameshift_variant",
+    "stop_gained",
+    "splice_donor_variant",
+    "splice_acceptor_variant",
+    "start_lost",
+}
 
 
 def load_ruleset(path_or_name: str | Path) -> dict:
@@ -91,6 +99,12 @@ def _missing_columns(df: pl.DataFrame, ruleset: dict) -> list[str]:
 
     if "VEP_SYMBOL" not in cols:
         missing.append("VEP_SYMBOL")
+
+    if "VEP_LoF" not in cols:
+        missing.append("VEP_LoF")
+
+    if "VEP_EXON" not in cols:
+        missing.append("VEP_EXON")
 
     return missing
 
@@ -345,6 +359,73 @@ def _pm4_bp3(df: pl.DataFrame) -> pl.Series:
             result.append(None)
 
     return pl.Series("acmg_pm4_bp3", result, dtype=pl.Utf8)
+
+
+def _pvs1(df: pl.DataFrame) -> pl.Series:
+    """PVS1 candidates from LOFTEE annotations on null-consequence variants.
+
+    LOFTEE HC without flags → PVS1_candidate; LC, flags, start-loss or
+    missing LOFTEE → review with the reason. Exon number appended for
+    the decision tree.
+    """
+    n = df.height
+    cols = set(df.columns)
+
+    if "VEP_Consequence" not in cols:
+        return pl.Series("acmg_pvs1", [None] * n, dtype=pl.Utf8)
+
+    consequence = df["VEP_Consequence"].cast(pl.Utf8)
+    has_lof = "VEP_LoF" in cols
+    has_lof_filter = "VEP_LoF_filter" in cols
+    has_lof_flags = "VEP_LoF_flags" in cols
+    has_exon = "VEP_EXON" in cols
+
+    lof = df["VEP_LoF"].cast(pl.Utf8) if has_lof else None
+    lof_filter = df["VEP_LoF_filter"].cast(pl.Utf8) if has_lof_filter else None
+    lof_flags = df["VEP_LoF_flags"].cast(pl.Utf8) if has_lof_flags else None
+    exon = df["VEP_EXON"].cast(pl.Utf8) if has_exon else None
+
+    result = []
+    for i in range(n):
+        csq = consequence[i]
+        if csq is None:
+            result.append(None)
+            continue
+
+        if not _has_consequence(csq, _NULL_CONSEQUENCES):
+            result.append(None)
+            continue
+
+        exon_str = exon[i] if exon is not None else None
+        exon_suffix = f":exon={exon_str}" if exon_str and exon_str not in ("", ".") else ""
+
+        if _has_consequence(csq, {"start_lost"}):
+            result.append(f"review:start_lost{exon_suffix}")
+            continue
+
+        lof_val = lof[i] if lof is not None else None
+        if lof_val is None or str(lof_val).strip() in ("", "."):
+            result.append(f"review:no_loftee{exon_suffix}")
+            continue
+
+        lof_upper = str(lof_val).strip().upper()
+
+        if lof_upper == "HC":
+            flags_val = lof_flags[i] if lof_flags is not None else None
+            if flags_val and str(flags_val).strip() not in ("", "."):
+                result.append(f"review:lof_flags={flags_val}{exon_suffix}")
+            else:
+                result.append(f"PVS1_candidate{exon_suffix}")
+        elif lof_upper == "LC":
+            filter_val = lof_filter[i] if lof_filter is not None else None
+            reason = f"lof_lc({filter_val})" if filter_val and str(filter_val).strip() not in ("", ".") else "lof_lc"
+            result.append(f"review:{reason}{exon_suffix}")
+        elif lof_upper == "OS":
+            result.append(f"review:lof_os{exon_suffix}")
+        else:
+            result.append(f"review:lof_unknown={lof_val}{exon_suffix}")
+
+    return pl.Series("acmg_pvs1", result, dtype=pl.Utf8)
 
 
 def _has_consequence(csq_string: str, target_set: set) -> bool:
@@ -710,6 +791,11 @@ def _resolve_criteria(row: dict, points_map: dict) -> tuple[list[str], int]:
     elif pm4_bp3 == "BP3_candidate":
         criteria.append("BP3_candidate")
 
+    # PVS1 (not scored — genetics-viz gates on the LoF mechanism)
+    pvs1 = row.get("acmg_pvs1")
+    if pvs1 is not None and pvs1.startswith("PVS1_candidate"):
+        criteria.append("PVS1_candidate")
+
     # De novo (not scored — genetics-viz determines PS2/PM6)
     denovo = row.get("acmg_denovo")
     if denovo == "de_novo":
@@ -761,6 +847,7 @@ def annotate_acmg(
     splice_series = _splice_evidence(df, ruleset)
     bp7_series = _bp7(df, ruleset)
     pm4_bp3_series = _pm4_bp3(df)
+    pvs1_series = _pvs1(df)
     denovo_series = _denovo_status(df, ruleset, dnm_config)
 
     df = df.with_columns([
@@ -769,6 +856,7 @@ def annotate_acmg(
         splice_series,
         bp7_series,
         pm4_bp3_series,
+        pvs1_series,
         denovo_series,
     ])
 
@@ -786,6 +874,7 @@ def annotate_acmg(
             "acmg_splice": df["acmg_splice"][i],
             "acmg_bp7": df["acmg_bp7"][i],
             "acmg_pm4_bp3": df["acmg_pm4_bp3"][i],
+            "acmg_pvs1": df["acmg_pvs1"][i],
             "acmg_denovo": df["acmg_denovo"][i],
         }
         crit, pts = _resolve_criteria(row, points_map)
