@@ -5,6 +5,28 @@ All notable changes to PyWombat will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-11-25
+
+### Added
+
+- **ACMG/AMP variant-level evidence module** (`src/pywombat/acmg.py`):
+  - Frequency status (absent, rare, BA1) from gnomAD FAF columns
+  - PP3/BP4 missense predictor evidence (REVEL thresholds from Pejaver 2022)
+  - Splice PP3/BP4 from SpliceAI (Walker 2023) and BP7 for synonymous/deep intronic
+  - PM4/BP3 candidates for in-frame length changes
+  - PVS1 candidate assessment via LOFTEE (HC/LC/OS) with exon tracking
+  - De novo inheritance labeling (sex-aware, PAR/Y-aware)
+  - Compound het partner detection with phase from transmission
+  - Criteria summary and partial points (Tavtigian 2020 framework)
+  - Ships with `acmg-svi-2024.1` default ruleset
+- **`wombat filter --acmg-ruleset`**: adds 12 `acmg_*` evidence columns to filtered output
+- **`wombat acmg` command**: re-annotates ACMG evidence on an existing filtered table without re-filtering
+- Stable output columns contract for all `acmg_*` columns in README
+
+### Changed
+
+- `cli.py` split into 6 domain modules (formatting, filters, expression, denovo, pedigree, prepare) for maintainability
+
 ## [1.6.3] - 2026-11-12
 
 ### Fixed
