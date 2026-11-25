@@ -4,7 +4,8 @@ import polars as pl
 import pytest
 from click.testing import CliRunner
 
-from pywombat.cli import cli, read_pedigree
+from pywombat.cli import cli
+from pywombat.pedigree import read_pedigree
 
 # A trio with the child listed first, as a pedigree subset per family often is
 CHILD = "FAM1\tSample3\tSample1\tSample2\t1\t2"

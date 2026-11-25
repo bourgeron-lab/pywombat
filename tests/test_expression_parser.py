@@ -3,7 +3,7 @@
 import polars as pl
 import pytest
 
-from pywombat.cli import parse_impact_filter_expression
+from pywombat.expression import parse_impact_filter_expression
 
 
 class TestExpressionParser:

@@ -3,7 +3,8 @@
 import polars as pl
 from click.testing import CliRunner
 
-from pywombat.cli import cli, apply_filters_lazy
+from pywombat.cli import cli
+from pywombat.filters import apply_filters_lazy
 
 
 class TestFilterCommand:
@@ -206,7 +207,7 @@ class TestDNMOptimization:
     def test_get_unique_chromosomes(self, tmp_test_dir):
         """Test chromosome discovery from Parquet file."""
         import polars as pl
-        from pywombat.cli import get_unique_chromosomes
+        from pywombat.denovo import get_unique_chromosomes
 
         # Create a test Parquet file with multiple chromosomes
         test_data = pl.DataFrame({
@@ -229,7 +230,7 @@ class TestDNMOptimization:
     def test_apply_dnm_prefilters(self, tmp_test_dir):
         """Test that frequency prefilters reduce variant count."""
         import polars as pl
-        from pywombat.cli import apply_dnm_prefilters
+        from pywombat.denovo import apply_dnm_prefilters
 
         # Create test data with varying frequencies
         test_data = pl.DataFrame({
@@ -264,7 +265,7 @@ class TestDNMOptimization:
     def test_dnm_skip_prefilters(self):
         """Test that skip_prefilters parameter works."""
         import polars as pl
-        from pywombat.cli import apply_de_novo_filter
+        from pywombat.denovo import apply_de_novo_filter
 
         # Create minimal test data with all required columns
         test_data = pl.DataFrame({
@@ -321,7 +322,7 @@ class TestDNMOptimization:
 
     def test_dnm_output_has_no_leftover_columns(self):
         """DNM output must not contain father_id, mother_id or sex_right."""
-        from pywombat.cli import apply_de_novo_filter
+        from pywombat.denovo import apply_de_novo_filter
 
         df = pl.DataFrame({
             "#CHROM": ["chr1"],
@@ -367,7 +368,7 @@ class TestDNMOptimization:
 
     def test_dnm_per_chromosome_applies_expression(self, tmp_test_dir):
         """Expression filter must be applied even in the DNM per-chromosome path."""
-        from pywombat.cli import process_dnm_by_chromosome
+        from pywombat.denovo import process_dnm_by_chromosome
 
         # Two variants: one HIGH impact, one LOW impact
         data = pl.DataFrame({
@@ -743,7 +744,7 @@ class TestYExcludedRegions:
 
     def test_y_ampliconic_variants_removed_from_dnm(self):
         """Y ampliconic variants are removed from DNM output."""
-        from pywombat.cli import apply_de_novo_filter
+        from pywombat.denovo import apply_de_novo_filter
 
         # Variant in Y ampliconic region (pos 8000000 is inside Y_Ampliconic2: 7574481-10266944)
         # Plus one autosomal variant
@@ -762,7 +763,7 @@ class TestYExcludedRegions:
 
     def test_y_par_variants_removed_from_dnm(self):
         """Y PAR variants are removed from DNM (already evaluated on X)."""
-        from pywombat.cli import apply_de_novo_filter
+        from pywombat.denovo import apply_de_novo_filter
 
         # Variant in Y PAR1 (pos 100000 is inside Y_PAR1: 10001-2781479)
         data = self._make_dnm_data(
@@ -780,7 +781,7 @@ class TestYExcludedRegions:
 
     def test_y_xtr_variants_removed_from_dnm(self):
         """Y XTR variants are removed from DNM output."""
-        from pywombat.cli import apply_de_novo_filter
+        from pywombat.denovo import apply_de_novo_filter
 
         # Variant in Y XTR1 (pos 4000000 is inside Y_XTR1: 3050044-6235111)
         data = self._make_dnm_data(
@@ -798,7 +799,7 @@ class TestYExcludedRegions:
 
     def test_non_y_excluded_variants_filtered_normally(self):
         """Y variants outside excluded regions still go through DNM filter."""
-        from pywombat.cli import apply_de_novo_filter
+        from pywombat.denovo import apply_de_novo_filter
 
         # Y variant outside any excluded region (pos 12000000 is between
         # Y_Ampliconic2 end 10266944 and Y_Ampliconic3 start 13984473)
@@ -821,7 +822,7 @@ class TestYExcludedRegions:
 
     def test_no_y_excluded_regions_config(self):
         """When config omits y_excluded_regions, behavior is unchanged."""
-        from pywombat.cli import apply_de_novo_filter
+        from pywombat.denovo import apply_de_novo_filter
 
         # Y variant in ampliconic region, but NO y_excluded_regions in config
         data = self._make_dnm_data(
@@ -854,7 +855,7 @@ class TestYExcludedRegions:
 
     def test_y_excluded_verbose_message(self, capsys):
         """Verbose mode prints removal count for Y excluded regions."""
-        from pywombat.cli import apply_de_novo_filter
+        from pywombat.denovo import apply_de_novo_filter
 
         data = self._make_dnm_data(
             ["chr1", "chrY", "chrY"],
