@@ -12,6 +12,7 @@ from pywombat.acmg import (
     _splice_evidence,
     _bp7,
     _pm4_bp3,
+    _denovo_status,
     _parse_intron_offset,
     _has_consequence,
 )
@@ -500,3 +501,190 @@ class TestAnnotateACMG:
         result = annotate_acmg(df, default_ruleset)
         assert result["acmg_criteria"][0] is None
         assert result["acmg_points_auto"][0] is None
+
+    def test_acmg_denovo_column_present(self, default_ruleset):
+        df = pl.DataFrame({
+            "VEP_Consequence": ["missense_variant"],
+        })
+        result = annotate_acmg(df, default_ruleset)
+        assert "acmg_denovo" in result.columns
+
+
+def _trio_row(chrom="chr1", pos=100, father_gt="0/0", mother_gt="0/0",
+              father_dp="30", mother_dp="30", father_gq="99", mother_gq="99",
+              father_vaf=0.0, mother_vaf=0.0, sex="1"):
+    """Build a minimal melted row with parent columns for de novo tests."""
+    return pl.DataFrame({
+        "#CHROM": [chrom],
+        "POS": [pos],
+        "REF": ["A"],
+        "ALT": ["T"],
+        "sample": ["Child1"],
+        "sample_gt": ["0/1"],
+        "sample_dp": ["30"],
+        "sample_gq": ["99"],
+        "sample_ad": ["15"],
+        "sample_vaf": [0.5],
+        "father": ["Father1"],
+        "mother": ["Mother1"],
+        "father_gt": [father_gt],
+        "father_dp": [father_dp],
+        "father_gq": [father_gq],
+        "father_ad": ["30"],
+        "father_vaf": [father_vaf],
+        "mother_gt": [mother_gt],
+        "mother_dp": [mother_dp],
+        "mother_gq": [mother_gq],
+        "mother_ad": ["30"],
+        "mother_vaf": [mother_vaf],
+        "sex": [sex],
+        "VEP_Consequence": ["missense_variant"],
+    })
+
+
+class TestDenovoStatus:
+    def test_de_novo_autosome(self, default_ruleset):
+        df = _trio_row(chrom="chr1")
+        result = _denovo_status(df, default_ruleset)
+        assert result[0] == "de_novo"
+
+    def test_inherited_paternal(self, default_ruleset):
+        df = _trio_row(father_gt="0/1")
+        result = _denovo_status(df, default_ruleset)
+        assert result[0] == "inherited_paternal"
+
+    def test_inherited_maternal(self, default_ruleset):
+        df = _trio_row(mother_gt="0/1")
+        result = _denovo_status(df, default_ruleset)
+        assert result[0] == "inherited_maternal"
+
+    def test_inherited_both(self, default_ruleset):
+        df = _trio_row(father_gt="0/1", mother_gt="0/1")
+        result = _denovo_status(df, default_ruleset)
+        assert result[0] == "inherited_both"
+
+    def test_no_parent_columns(self, default_ruleset):
+        df = pl.DataFrame({
+            "#CHROM": ["chr1"],
+            "POS": [100],
+            "VEP_Consequence": ["missense_variant"],
+        })
+        result = _denovo_status(df, default_ruleset)
+        assert result[0] is None
+
+    def test_no_parents_in_pedigree(self, default_ruleset):
+        df = _trio_row()
+        df = df.with_columns([
+            pl.lit(None).cast(pl.Utf8).alias("father"),
+            pl.lit(None).cast(pl.Utf8).alias("mother"),
+        ])
+        result = _denovo_status(df, default_ruleset)
+        assert result[0] == "not_testable:no_parents"
+
+    def test_parent_low_dp(self, default_ruleset):
+        df = _trio_row(father_dp="5")
+        result = _denovo_status(df, default_ruleset)
+        assert result[0] == "not_testable:parent_qc"
+
+    def test_parent_low_gq(self, default_ruleset):
+        df = _trio_row(mother_gq="10")
+        result = _denovo_status(df, default_ruleset)
+        assert result[0] == "not_testable:parent_qc"
+
+    def test_parent_missing_gt(self, default_ruleset):
+        df = _trio_row(father_gt="./.")
+        result = _denovo_status(df, default_ruleset)
+        assert result[0] == "not_testable:parent_gt"
+
+    def test_parent_high_vaf(self, default_ruleset):
+        df = _trio_row(father_vaf=0.05)
+        result = _denovo_status(df, default_ruleset)
+        assert result[0] == "not_testable:parent_vaf"
+
+    def test_x_linked_male_de_novo(self, default_ruleset):
+        df = _trio_row(chrom="chrX", pos=50000000, sex="1")
+        result = _denovo_status(df, default_ruleset)
+        assert result[0] == "de_novo"
+
+    def test_x_linked_male_inherited_maternal(self, default_ruleset):
+        df = _trio_row(chrom="chrX", pos=50000000, sex="1", mother_gt="0/1")
+        result = _denovo_status(df, default_ruleset)
+        assert result[0] == "inherited_maternal"
+
+    def test_x_linked_male_father_ignored(self, default_ruleset):
+        """Father's X genotype is not informative for males outside PAR."""
+        df = _trio_row(chrom="chrX", pos=50000000, sex="1", father_gt="0/1")
+        result = _denovo_status(df, default_ruleset)
+        assert result[0] == "de_novo"
+
+    def test_x_par_tests_both_parents(self, default_ruleset):
+        dnm_cfg = {
+            "par_regions": {
+                "grch38": {
+                    "PAR1": {"chrom": "X", "start": 10000, "end": 2781479},
+                }
+            }
+        }
+        df = _trio_row(chrom="chrX", pos=100000, sex="1", father_gt="0/1")
+        result = _denovo_status(df, default_ruleset, dnm_cfg)
+        assert result[0] == "inherited_paternal"
+
+    def test_y_de_novo(self, default_ruleset):
+        df = _trio_row(chrom="chrY", pos=10000000, sex="1")
+        result = _denovo_status(df, default_ruleset)
+        assert result[0] == "de_novo"
+
+    def test_y_inherited_paternal(self, default_ruleset):
+        df = _trio_row(chrom="chrY", pos=10000000, sex="1", father_gt="0/1")
+        result = _denovo_status(df, default_ruleset)
+        assert result[0] == "inherited_paternal"
+
+    def test_y_excluded_region(self, default_ruleset):
+        dnm_cfg = {
+            "y_excluded_regions": {
+                "grch38": {
+                    "Y_Ampliconic1": {"chrom": "Y", "start": 6235111, "end": 6532906},
+                }
+            }
+        }
+        df = _trio_row(chrom="chrY", pos=6300000, sex="1")
+        result = _denovo_status(df, default_ruleset, dnm_cfg)
+        assert result[0] == "not_testable:y_excluded"
+
+    def test_de_novo_in_criteria(self, default_ruleset):
+        df = _trio_row()
+        df = df.with_columns([
+            pl.lit(0.001).alias("fafmax_faf95_max_joint"),
+            pl.lit(5).alias("AC_joint"),
+            pl.lit(50000).alias("AN_joint"),
+            pl.lit(0.80).alias("REVEL"),
+            pl.lit(0.05).alias("SpliceAI_maxDS"),
+            pl.lit(None).cast(pl.Utf8).alias("VEP_HGVSc"),
+            pl.lit(None).cast(pl.Utf8).alias("LCR"),
+        ])
+        result = annotate_acmg(df, default_ruleset)
+        criteria = result["acmg_criteria"][0]
+        assert "de_novo" in criteria
+
+    def test_inherited_not_in_criteria(self, default_ruleset):
+        df = _trio_row(father_gt="0/1")
+        df = df.with_columns([
+            pl.lit(0.001).alias("fafmax_faf95_max_joint"),
+            pl.lit(5).alias("AC_joint"),
+            pl.lit(50000).alias("AN_joint"),
+            pl.lit(0.80).alias("REVEL"),
+            pl.lit(0.05).alias("SpliceAI_maxDS"),
+            pl.lit(None).cast(pl.Utf8).alias("VEP_HGVSc"),
+            pl.lit(None).cast(pl.Utf8).alias("LCR"),
+        ])
+        result = annotate_acmg(df, default_ruleset)
+        criteria = result["acmg_criteria"][0]
+        assert "de_novo" not in (criteria or "")
+
+    def test_dnm_config_overrides_ruleset(self, default_ruleset):
+        dnm_cfg = {"parent_vaf_max": 0.001}
+        df = _trio_row(father_vaf=0.015)
+        result = _denovo_status(df, default_ruleset, dnm_cfg)
+        assert result[0] == "not_testable:parent_vaf"
+        result_default = _denovo_status(df, default_ruleset)
+        assert result_default[0] == "de_novo"

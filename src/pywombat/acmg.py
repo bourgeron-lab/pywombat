@@ -2,7 +2,7 @@
 
 Computes evidence criteria that need only the variant and the family:
 frequency, PP3/BP4 (missense predictor), splice PP3/BP4, BP7,
-PM4/BP3 candidates. Each criterion becomes an acmg_* column.
+PM4/BP3 candidates, de novo status. Each criterion becomes an acmg_* column.
 """
 
 import importlib.resources
@@ -12,6 +12,8 @@ from typing import Optional
 
 import polars as pl
 import yaml
+
+from pywombat.denovo import _chrom_short, _pos_in_par
 
 
 _POINTS = {"supporting": 1, "moderate": 2, "strong": 4, "very_strong": 8}
@@ -376,6 +378,191 @@ def _parse_intron_offset(hgvsc: Optional[str]) -> Optional[int]:
     return None
 
 
+def _in_y_excluded(pos: int, y_excluded_regions: dict) -> bool:
+    """Return True if pos falls in any Y excluded region."""
+    if not y_excluded_regions:
+        return False
+    for assembly, regions in y_excluded_regions.items():
+        for region_name, region in regions.items():
+            start = int(region.get("start"))
+            end = int(region.get("end"))
+            if start <= pos <= end:
+                return True
+    return False
+
+
+def _parent_gt_has_alt(gt: Optional[str]) -> Optional[bool]:
+    """Return True if the parent genotype carries an alt allele.
+
+    0/0 → False, 0/1 or 1/1 → True, None or ./. → None.
+    """
+    if gt is None:
+        return None
+    gt = str(gt).strip()
+    if "." in gt:
+        return None
+    return gt != "0/0"
+
+
+def _parent_qc_ok(dp, gq, dp_min: float, gq_min: float) -> Optional[bool]:
+    """Return True if parent passes DP/GQ thresholds, None if data missing."""
+    if dp is None or gq is None:
+        return None
+    try:
+        dp_v = float(str(dp))
+        gq_v = float(str(gq))
+    except (ValueError, TypeError):
+        return None
+    return dp_v >= dp_min and gq_v >= gq_min
+
+
+def _parent_vaf_ok(vaf, vaf_max: float) -> bool:
+    """Return True if parent VAF is below threshold (consistent with reference)."""
+    if vaf is None:
+        return True
+    try:
+        vaf_v = float(str(vaf))
+    except (ValueError, TypeError):
+        return True
+    return vaf_v < vaf_max
+
+
+def _denovo_status(
+    df: pl.DataFrame,
+    ruleset: dict,
+    dnm_config: Optional[dict] = None,
+) -> pl.Series:
+    """Label each row with its de novo / inheritance status.
+
+    Values: de_novo, inherited_paternal, inherited_maternal, inherited_both,
+    not_testable:<reason>, or null (no pedigree).
+    """
+    cfg = {}
+    cfg.update(ruleset.get("de_novo", {}))
+    if dnm_config:
+        for key in ("parent_dp_min", "parent_gq_min", "parent_vaf_max",
+                     "par_regions", "y_excluded_regions"):
+            if key in dnm_config:
+                cfg[key] = dnm_config[key]
+
+    p_dp = cfg.get("parent_dp_min", 10)
+    p_gq = cfg.get("parent_gq_min", 18)
+    p_vaf = cfg.get("parent_vaf_max", 0.02)
+    par_regions = cfg.get("par_regions", {})
+    y_excluded_regions = cfg.get("y_excluded_regions", {})
+
+    n = df.height
+    cols = set(df.columns)
+
+    parent_cols = {"father_gt", "mother_gt", "father_dp", "mother_dp",
+                   "father_gq", "mother_gq", "father_vaf", "mother_vaf"}
+    if not parent_cols.issubset(cols):
+        return pl.Series("acmg_denovo", [None] * n, dtype=pl.Utf8)
+
+    father_col = "father" if "father" in cols else "father_id" if "father_id" in cols else None
+    mother_col = "mother" if "mother" in cols else "mother_id" if "mother_id" in cols else None
+    has_sex = "sex" in cols
+    has_chrom = "#CHROM" in cols
+    has_pos = "POS" in cols
+
+    father_id = df[father_col].cast(pl.Utf8) if father_col else None
+    mother_id = df[mother_col].cast(pl.Utf8) if mother_col else None
+    chrom_s = df["#CHROM"].cast(pl.Utf8) if has_chrom else None
+    pos_s = df["POS"] if has_pos else None
+    sex_s = df["sex"].cast(pl.Utf8) if has_sex else None
+    f_gt = df["father_gt"].cast(pl.Utf8)
+    m_gt = df["mother_gt"].cast(pl.Utf8)
+    f_dp = df["father_dp"]
+    m_dp = df["mother_dp"]
+    f_gq = df["father_gq"]
+    m_gq = df["mother_gq"]
+    f_vaf = df["father_vaf"].cast(pl.Float64, strict=False)
+    m_vaf = df["mother_vaf"].cast(pl.Float64, strict=False)
+
+    result = []
+    for i in range(n):
+        fid = father_id[i] if father_id is not None else None
+        mid = mother_id[i] if mother_id is not None else None
+
+        if fid is None and mid is None:
+            result.append("not_testable:no_parents")
+            continue
+
+        chrom_raw = chrom_s[i] if chrom_s is not None else None
+        cs = _chrom_short(chrom_raw).upper() if chrom_raw else ""
+        pos_val = pos_s[i] if pos_s is not None else None
+        sex_val = sex_s[i] if sex_s is not None else None
+        sex_norm = str(sex_val).strip().upper() if sex_val is not None else ""
+
+        if cs == "Y" and pos_val is not None:
+            if _in_y_excluded(int(pos_val), y_excluded_regions):
+                result.append("not_testable:y_excluded")
+                continue
+
+        in_par = False
+        if cs in ("X", "Y") and pos_val is not None:
+            in_par = _pos_in_par(chrom_raw, int(pos_val), par_regions)
+
+        is_male = sex_norm in ("1", "M")
+        is_x_hemi = cs == "X" and is_male and not in_par
+        is_y = cs == "Y"
+
+        test_father = not is_x_hemi
+        test_mother = not is_y
+
+        father_has_alt = _parent_gt_has_alt(f_gt[i])
+        mother_has_alt = _parent_gt_has_alt(m_gt[i])
+
+        if test_father and fid is not None:
+            f_qc = _parent_qc_ok(f_dp[i], f_gq[i], p_dp, p_gq)
+            if f_qc is None:
+                result.append("not_testable:parent_qc")
+                continue
+            if not f_qc:
+                result.append("not_testable:parent_qc")
+                continue
+            if father_has_alt is None:
+                result.append("not_testable:parent_gt")
+                continue
+        elif test_father and fid is None:
+            result.append("not_testable:no_father")
+            continue
+
+        if test_mother and mid is not None:
+            m_qc = _parent_qc_ok(m_dp[i], m_gq[i], p_dp, p_gq)
+            if m_qc is None:
+                result.append("not_testable:parent_qc")
+                continue
+            if not m_qc:
+                result.append("not_testable:parent_qc")
+                continue
+            if mother_has_alt is None:
+                result.append("not_testable:parent_gt")
+                continue
+        elif test_mother and mid is None:
+            result.append("not_testable:no_mother")
+            continue
+
+        f_alt = father_has_alt if test_father else None
+        m_alt = mother_has_alt if test_mother else None
+
+        if f_alt and m_alt:
+            result.append("inherited_both")
+        elif f_alt:
+            result.append("inherited_paternal")
+        elif m_alt:
+            result.append("inherited_maternal")
+        else:
+            f_vaf_ok = _parent_vaf_ok(f_vaf[i], p_vaf) if test_father else True
+            m_vaf_ok = _parent_vaf_ok(m_vaf[i], p_vaf) if test_mother else True
+            if f_vaf_ok and m_vaf_ok:
+                result.append("de_novo")
+            else:
+                result.append("not_testable:parent_vaf")
+
+    return pl.Series("acmg_denovo", result, dtype=pl.Utf8)
+
+
 def _resolve_criteria(row: dict, points_map: dict) -> tuple[list[str], int]:
     """Combine individual acmg_* columns into criteria list and point sum.
 
@@ -436,6 +623,11 @@ def _resolve_criteria(row: dict, points_map: dict) -> tuple[list[str], int]:
     elif pm4_bp3 == "BP3_candidate":
         criteria.append("BP3_candidate")
 
+    # De novo (not scored — genetics-viz determines PS2/PM6)
+    denovo = row.get("acmg_denovo")
+    if denovo == "de_novo":
+        criteria.append("de_novo")
+
     return criteria, total
 
 
@@ -458,12 +650,14 @@ def _capitalize_strength(s: str) -> str:
 def annotate_acmg(
     df: pl.DataFrame,
     ruleset: dict,
+    dnm_config: Optional[dict] = None,
 ) -> pl.DataFrame:
     """Add ACMG evidence columns to a filtered DataFrame.
 
     Args:
         df: Filtered variant DataFrame (one row per variant×sample)
         ruleset: Parsed ruleset dict (from load_ruleset)
+        dnm_config: Optional DNM filter config (for PAR/Y regions and thresholds)
 
     Returns:
         DataFrame with acmg_* columns appended
@@ -480,6 +674,7 @@ def annotate_acmg(
     splice_series = _splice_evidence(df, ruleset)
     bp7_series = _bp7(df, ruleset)
     pm4_bp3_series = _pm4_bp3(df)
+    denovo_series = _denovo_status(df, ruleset, dnm_config)
 
     df = df.with_columns([
         freq_series,
@@ -487,6 +682,7 @@ def annotate_acmg(
         splice_series,
         bp7_series,
         pm4_bp3_series,
+        denovo_series,
     ])
 
     # Resolve criteria and points per row
@@ -500,6 +696,7 @@ def annotate_acmg(
             "acmg_splice": df["acmg_splice"][i],
             "acmg_bp7": df["acmg_bp7"][i],
             "acmg_pm4_bp3": df["acmg_pm4_bp3"][i],
+            "acmg_denovo": df["acmg_denovo"][i],
         }
         crit, pts = _resolve_criteria(row, points_map)
         criteria_list.append(";".join(crit) if crit else None)

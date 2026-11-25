@@ -38,3 +38,8 @@ splice:
   bp7_intron_offsets:
     donor: 7
     acceptor: -21
+
+de_novo:
+  parent_dp_min: 10
+  parent_gq_min: 18
+  parent_vaf_max: 0.02

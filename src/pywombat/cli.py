@@ -327,7 +327,7 @@ def filter_cmd(
                     ruleset = load_ruleset(acmg_ruleset)
                     if verbose:
                         click.echo(f"Annotating ACMG evidence ({ruleset.get('name', acmg_ruleset)})...", err=True)
-                    formatted_df = annotate_acmg(formatted_df, ruleset)
+                    formatted_df = annotate_acmg(formatted_df, ruleset, dnm_config=filter_config_data.get("dnm"))
 
                 write_output(formatted_df, output, output_format, verbose)
                 return
@@ -485,8 +485,9 @@ def filter_cmd(
             ruleset = load_ruleset(acmg_ruleset)
             if verbose:
                 click.echo(f"Annotating ACMG evidence ({ruleset.get('name', acmg_ruleset)})...", err=True)
+            dnm_cfg = filter_config_data.get("dnm") if filter_config_data else None
             df = lazy_df.collect() if isinstance(lazy_df, pl.LazyFrame) else lazy_df
-            df = annotate_acmg(df, ruleset)
+            df = annotate_acmg(df, ruleset, dnm_config=dnm_cfg)
             lazy_df = df.lazy()
 
         write_output(lazy_df, output, output_format, verbose)
