@@ -21,7 +21,7 @@ expression: >
     (
       (MPC not_empty & MPC >= 2.6) |
       (REVEL not_empty & REVEL >= 0.932) |
-      (popEVE not_empty & popEVE <= -4.6) |
+      (popEVE not_empty & popEVE <= -4.6)
     ) &
     (cadd_v1.7 is_empty | cadd_v1.7 >= 20) &
     (am_pathogenicity is_empty | am_pathogenicity >= 0.56)

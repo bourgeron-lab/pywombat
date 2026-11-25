@@ -337,9 +337,17 @@ def process_dnm_by_chromosome(
         )
 
     results = []
+    quality_cfg = filter_config.get("quality", {})
+    dnm_section = filter_config.get("dnm", {})
+    overlap = set(quality_cfg) & set(dnm_section) - {"enabled"}
+    if overlap:
+        warnings.warn(
+            f"Keys {sorted(overlap)} appear in both 'quality' and 'dnm'; "
+            f"'dnm' values will be used."
+        )
     dnm_cfg = {}
-    dnm_cfg.update(filter_config.get("quality", {}))
-    dnm_cfg.update(filter_config.get("dnm", {}))
+    dnm_cfg.update(quality_cfg)
+    dnm_cfg.update(dnm_section)
 
     for chrom in chromosomes:
         if verbose:
@@ -1184,8 +1192,9 @@ def apply_de_novo_filter(
 
     # Ensure we have parent identifiers (father/mother). Try to add from pedigree if missing.
     if "father_id" not in df.columns or "mother_id" not in df.columns:
-        if pedigree_df is not None:
-            # Join pedigree to get father/mother/sample sex if needed
+        if "father" in df.columns and "mother" in df.columns:
+            df = df.rename({"father": "father_id", "mother": "mother_id"})
+        elif pedigree_df is not None:
             df = df.join(
                 pedigree_df, left_on="sample", right_on="sample_id", how="left"
             )
@@ -1450,9 +1459,11 @@ def apply_de_novo_filter(
             err=True,
         )
 
-    # Drop temporary columns
+    # Drop temporary columns and rename parent IDs to match the non-DNM output
     temp_cols = ["_chrom_short", "_in_par", "_sex_norm", "_y_excluded"]
     result = result.drop([c for c in temp_cols if c in result.columns])
+    if "father_id" in result.columns:
+        result = result.rename({"father_id": "father", "mother_id": "mother"})
 
     if verbose:
         click.echo(f"De novo filter: {original} -> {result.shape[0]} rows", err=True)
@@ -1478,6 +1489,21 @@ def parse_impact_filter_expression(expression: str, df: pl.DataFrame) -> pl.Expr
     # Split by logical operators while preserving them
     tokens = re.split(r"(\s*[&|]\s*|\(|\))", expr_str)
     tokens = [t.strip() for t in tokens if t.strip()]
+
+    # Reject dangling logical operators
+    if tokens and tokens[-1] in ("&", "|"):
+        raise ValueError(
+            f"Expression ends with a dangling '{tokens[-1]}': {expression!r}"
+        )
+    for i, tok in enumerate(tokens[:-1]):
+        if tok in ("&", "|") and tokens[i + 1] in ("&", "|", ")"):
+            raise ValueError(
+                f"Operator '{tok}' is not followed by a condition: {expression!r}"
+            )
+        if tok == "(" and tokens[i + 1] in ("&", "|"):
+            raise ValueError(
+                f"Operator '{tokens[i + 1]}' right after '(': {expression!r}"
+            )
 
     def parse_condition(condition: str) -> pl.Expr:
         """Parse a single condition into a Polars expression."""

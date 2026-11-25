@@ -319,6 +319,52 @@ class TestDNMOptimization:
         assert result_no_skip.shape[0] == 1, \
             f"Expected 1 row with skip_prefilters=False, got {result_no_skip.shape[0]}"
 
+    def test_dnm_output_has_no_leftover_columns(self):
+        """DNM output must not contain father_id, mother_id or sex_right."""
+        from pywombat.cli import apply_de_novo_filter
+
+        df = pl.DataFrame({
+            "#CHROM": ["chr1"],
+            "POS": [100],
+            "sample": ["Child"],
+            "sample_gt": ["0/1"],
+            "sample_dp": [30],
+            "sample_gq": [50],
+            "sample_vaf": [0.45],
+            "father": ["Father"],
+            "mother": ["Mother"],
+            "father_gt": ["0/0"],
+            "father_dp": [25],
+            "father_gq": [50],
+            "father_vaf": [0.01],
+            "mother_gt": ["0/0"],
+            "mother_dp": [22],
+            "mother_gq": [50],
+            "mother_vaf": [0.01],
+            "sex": ["1"],
+        })
+
+        pedigree = pl.DataFrame({
+            "sample_id": ["Child", "Father", "Mother"],
+            "father_id": ["Father", None, None],
+            "mother_id": ["Mother", None, None],
+            "sex": ["1", "1", "2"],
+        })
+
+        cfg = {
+            "sample_dp_min": 10,
+            "parent_dp_min": 10,
+            "parent_gq_min": 18,
+            "parent_vaf_max": 0.02,
+        }
+
+        result = apply_de_novo_filter(df, cfg, pedigree_df=pedigree, skip_prefilters=True)
+        assert "father_id" not in result.columns
+        assert "mother_id" not in result.columns
+        assert "sex_right" not in result.columns
+        assert "father" in result.columns
+        assert "mother" in result.columns
+
 
 class TestHomaltFilter:
     """Test homalt_only quality filter."""

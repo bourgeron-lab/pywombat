@@ -156,6 +156,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `TestFindTranscriptAnnotation` (4 tests) - Transcript matching
   - `TestAnnotateMnvVariants` (15 tests) - MNV annotation pipeline
 
+## [1.3.4] - 2026-02-10
+
+### Fixed
+
+- **`homalt_only` missing on the lazy path**: The `homalt_only` quality filter was not
+  applied when filtering Parquet input through the lazy evaluation path, only on the
+  eager (TSV) path.
+
+## [1.3.3] - 2026-02-09
+
+### Added
+
+- **Dotted column names in expressions**: Column names containing dots (e.g., `cadd_v1.7`,
+  `faf95.joint`) are now supported in filter expressions.
+- **`not_empty` predicate**: New expression predicate that is the logical negation of
+  `is_empty` (true when the value is not null, not empty string, and not ".").
+- **New example config**: `rare_missense_plp.yml` for missense variants with pathogenicity
+  score filters (MPC, REVEL, popEVE, AlphaMissense, CADD).
+
+## [1.3.1] - 2026-02-09
+
+### Added
+
+- **`homalt_only` quality filter**: New YAML option to keep only homozygous alternative
+  (1/1) genotypes, for recessive analysis workflows.
+
+## [1.3.0] - 2026-02-07
+
+### Added
+
+- **New expression predicates**: `is_snv` (REF and ALT are single nucleotides), `is_indel`
+  (not a SNV), and `is_empty` (null, empty string, or ".").
+- **Extended `contains` predicate**: Now performs case-insensitive substring matching.
+
 ## [1.2.1] - 2026-02-05
 
 ### Fixed
@@ -394,5 +428,21 @@ This release marks PyWombat as production-ready for:
 
 ---
 
+[1.6.3]: https://github.com/bourgeron-lab/pywombat/releases/tag/v1.6.3
+[1.6.2]: https://github.com/bourgeron-lab/pywombat/releases/tag/v1.6.2
+[1.6.1]: https://github.com/bourgeron-lab/pywombat/releases/tag/v1.6.1
+[1.6.0]: https://github.com/bourgeron-lab/pywombat/releases/tag/v1.6.0
+[1.5.3]: https://github.com/bourgeron-lab/pywombat/releases/tag/v1.5.3
+[1.5.2]: https://github.com/bourgeron-lab/pywombat/releases/tag/v1.5.2
+[1.5.1]: https://github.com/bourgeron-lab/pywombat/releases/tag/v1.5.1
+[1.5.0]: https://github.com/bourgeron-lab/pywombat/releases/tag/v1.5.0
+[1.3.4]: https://github.com/bourgeron-lab/pywombat/releases/tag/v1.3.4
+[1.3.3]: https://github.com/bourgeron-lab/pywombat/releases/tag/v1.3.3
+[1.3.1]: https://github.com/bourgeron-lab/pywombat/releases/tag/v1.3.1
+[1.3.0]: https://github.com/bourgeron-lab/pywombat/releases/tag/v1.3.0
+[1.2.1]: https://github.com/bourgeron-lab/pywombat/releases/tag/v1.2.1
+[1.2.0]: https://github.com/bourgeron-lab/pywombat/releases/tag/v1.2.0
+[1.1.0]: https://github.com/bourgeron-lab/pywombat/releases/tag/v1.1.0
+[1.0.1]: https://github.com/bourgeron-lab/pywombat/releases/tag/v1.0.1
 [1.0.0]: https://github.com/bourgeron-lab/pywombat/releases/tag/v1.0.0
 [0.5.0]: https://github.com/bourgeron-lab/pywombat/releases/tag/v0.5.0

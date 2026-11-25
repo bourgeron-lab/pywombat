@@ -133,3 +133,21 @@ class TestExpressionParser:
         expr = parse_impact_filter_expression("anno.db.v3.2.score >= 20", df)
         result = df.filter(expr)
         assert result.shape[0] == 2
+
+    def test_dangling_and_rejected(self):
+        """Trailing & must be rejected."""
+        df = pl.DataFrame({"A": [1], "B": [2]})
+        with pytest.raises(ValueError, match="dangling"):
+            parse_impact_filter_expression("A >= 1 &", df)
+
+    def test_dangling_or_rejected(self):
+        """Trailing | must be rejected."""
+        df = pl.DataFrame({"A": [1], "B": [2]})
+        with pytest.raises(ValueError, match="dangling"):
+            parse_impact_filter_expression("A >= 1 |", df)
+
+    def test_dangling_or_in_group_rejected(self):
+        """Trailing | before closing paren must be rejected."""
+        df = pl.DataFrame({"A": [1], "B": [2]})
+        with pytest.raises(ValueError, match="not followed by a condition"):
+            parse_impact_filter_expression("(A >= 1 |)", df)
